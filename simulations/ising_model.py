@@ -1,5 +1,5 @@
 # quantum_ml_simulation/simulations/ising_model.py
-# Implementation for Simulation Card 1: Transverse Field Ising Model
+# Implementation for Simulation Card 1: Transverse Field Ising Model (Corrected)
 
 import qiskit
 import itertools
@@ -8,7 +8,9 @@ import numpy as np
 # Use relative imports
 from .base_simulation import BaseSimulation
 from ..config import simulation_params as cfg
-from ..quantum_runner import circuit_builder as cb
+# circuit_builder is not strictly needed anymore if using direct methods,
+# but keep the import if other simulations might use it.
+# from ..quantum_runner import circuit_builder as cb
 
 class IsingModelSimulation(BaseSimulation):
     """
@@ -16,6 +18,7 @@ class IsingModelSimulation(BaseSimulation):
     Hamiltonian: H = J (Z0Z1 + Z1Z2) + B (X0 + X1 + X2)
     Uses Trotterization for time evolution exp(-iHt).
     Measures <Z0Z1>.
+    Uses standard Qiskit gates via direct circuit methods (e.g., .rzz(), .rx()).
     """
     def __init__(self):
         """Initializes the Ising Model simulation using parameters from config."""
@@ -34,7 +37,6 @@ class IsingModelSimulation(BaseSimulation):
 
     def get_parameter_space(self) -> list[tuple]:
         """Generates unique combinations of (n_steps, J, B)."""
-        # Ensure ranges are valid
         if not self.n_steps_range or not self.j_range or self.b_range is None:
              print("Warning: One or more parameter ranges for Ising Model are empty or None.")
              return []
@@ -48,37 +50,30 @@ class IsingModelSimulation(BaseSimulation):
 
         # --- Trotter Steps ---
         for step in range(n_steps):
-            # Apply ZZ interactions (Part 1 of Trotter step: exp(-i H_ZZ * dt))
+            # Apply ZZ interactions (Part 1: exp(-i H_ZZ * dt))
             # H_ZZ = J (Z0Z1 + Z1Z2)
             if not np.isclose(J, 0.0):
-                # Angle consideration: If H = J*Op, evolution is exp(-i J*Op*dt).
-                # If Rzz(theta) implements exp(-i * theta * ZZ), then theta = J * dt.
-                # If Rzz(theta) implements exp(-i * theta/2 * ZZ), then theta = 2 * J * dt.
-                # Assuming create_rzz_gate implements exp(-i * angle * ZZ) based on its Rz usage.
-                angle_zz = J * self.delta_t
+                # Standard Qiskit RZZ(theta) = exp(-i*theta/2*ZZ)
+                # We want exp(-i * J*ZZ * dt), so theta/2 = J*dt => theta = 2*J*dt
+                angle_zz = 2.0 * J * self.delta_t
 
-                # Apply Rzz to qubits (0, 1)
-                rzz_gate_01 = cb.create_rzz_gate(angle_zz)
-                circuit.append(rzz_gate_01, [0, 1])
+                # Apply Rzz using the direct circuit method
+                circuit.rzz(angle_zz, 0, 1) # Apply to qubits (0, 1)
+                circuit.rzz(angle_zz, 1, 2) # Apply to qubits (1, 2)
 
-                # Apply Rzz to qubits (1, 2)
-                rzz_gate_12 = cb.create_rzz_gate(angle_zz)
-                circuit.append(rzz_gate_12, [1, 2])
-
-            # Apply Transverse Field (Part 2 of Trotter step: exp(-i H_X * dt))
+            # Apply Transverse Field (Part 2: exp(-i H_X * dt))
             # H_X = B (X0 + X1 + X2)
             if not np.isclose(B, 0.0):
-                # Angle consideration: If Rx(theta) implements exp(-i * theta/2 * X),
-                # then for H=B*X, we need theta/2 = B*dt => theta = 2 * B * dt.
-                # Qiskit's RXGate(angle) implements exp(-i * angle/2 * X).
-                angle_rx = 2 * B * self.delta_t
-                rx_gate = cb.create_rx_gate(angle_rx) # Use the function which returns RXGate instance
+                # Standard Qiskit RX(theta) = exp(-i*theta/2*X)
+                # We want exp(-i * B*X * dt), so theta/2 = B*dt => theta = 2*B*dt
+                angle_rx = 2.0 * B * self.delta_t
 
+                # Apply Rx using the direct circuit method
                 for q_idx in range(self.n_qubits):
-                   circuit.append(rx_gate, [q_idx]) # Append the RXGate object
+                   circuit.rx(angle_rx, q_idx) # Apply Rx directly
 
             # Optional barrier for visualization per Trotter step
-            if n_steps > 1 and step < n_steps - 1 : # Don't add after last step
+            if n_steps > 1 and step < n_steps - 1: # Don't add after last step
                  circuit.barrier()
 
         return circuit
