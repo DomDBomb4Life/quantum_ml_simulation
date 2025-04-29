@@ -3,62 +3,64 @@
 import numpy as np
 import os
 
-# --- Common Simulation Parameters ---
-N_QUBITS_DEFAULT = 3 # Default for most simulations
-INITIAL_STATE = "000" # Represents |000> for 3 qubits
-N_SHOTS = 1000       # Default shots (used if switching to sampling backend)
-DELTA_T = 0.1        # Time step duration
-N_STEPS_RANGE = list(range(1, 11)) # n = 1 to 10 (number of Trotter steps)
+# --- Core Simulation Setup ---
+# Objective 4: Scale System Size
+N_QUBITS = 4 # Increased system size (3 is too small for complexity)
 
-# --- Simulation 1: Ising Model ---
+# Objective 5: Extend Evolution Time and Parameter Ranges
+DELTA_T = 0.05 # Smaller time step for better accuracy
+N_STEPS_RANGE = list(range(1, 21)) # n = 1 to 20 (total time T up to 1.0)
+
+# Parameter Ranges (using linspace for density)
+# J: Interaction strength
+J_RANGE = np.linspace(0.1, 2.0, 21).round(3).tolist() # 0.1 to 2.0 (21 points)
+# B: Transverse field strength
+B_RANGE = np.linspace(0.0, 1.0, 21).round(3).tolist() # 0.0 to 1.0 (21 points)
+
+# Objective 5: Use Superposition Initial State (handled in simulation class)
+INITIAL_STATE_TYPE = "superposition" # 'zero' or 'superposition'
+
+# Objective 6: Incorporate Shot-Based Measurements
+SIMULATION_MODE = "statevector" # 'statevector' or 'shots'
+N_SHOTS = 2048 # Number of shots for shot-based simulation
+
+# --- Controls for Advanced Features ---
+# Objective 2: Add Validation Against Exact Diagonalization
+VALIDATE_TROTTER = True # Enable validation for small systems?
+VALIDATION_MAX_QUBITS = 4 # Only validate up to this many qubits (ED is expensive)
+VALIDATION_TOLERANCE = 0.005 # Tolerance for validation difference
+
+# Objective 7: Quantify Entanglement
+COMPUTE_ENTANGLEMENT = True # Compute bipartite entanglement entropy?
+ENTANGLEMENT_PARTITION = N_QUBITS // 2 # Partition size for entanglement (e.g., first half)
+
+
+# --- Simulation-Specific Parameters (Example: Ising) ---
 ISING_PARAMS = {
-    "n_qubits": N_QUBITS_DEFAULT,
-    "J_range": [round(0.1 * i, 2) for i in range(1, 11)], # 0.1 to 1.0
-    "B_range": [round(0.05 * i, 2) for i in range(0, 11)], # 0 to 0.5
-    "measurement_operator": "Z1Z2" # String identifier for <Z_0 Z_1> (on qubits 0 and 1)
+    "n_qubits": N_QUBITS, # Use global N_QUBITS
+    "J_range": J_RANGE,   # Use global J_RANGE
+    "B_range": B_RANGE,   # Use global B_RANGE
+    "measurement_operator": "Z1Z2" # Measure correlation on qubits 0, 1
+    # Add other simulation types (Heisenberg, etc.) here if needed
 }
 
-# --- Simulation 4: Spin Chain Potential ---
-SPIN_CHAIN_POTENTIAL_PARAMS = {
-    "n_qubits": N_QUBITS_DEFAULT,
-    "J_fixed": 0.5,
-    "k_range": [round(0.05 * i, 2) for i in range(0, 11)], # 0 to 0.5
-    "measurement_operator": "Z1Z2" # <Z_0 Z_1>
-}
-
-# --- Simulation 5: Dimerized Heisenberg ---
-DIMERIZED_HEISENBERG_PARAMS = {
-    "n_qubits": N_QUBITS_DEFAULT,
-    "J1_range": [round(0.1 * i, 2) for i in range(1, 11)],
-    "J2_range": [round(0.1 * i, 2) for i in range(1, 11)],
-    "measurement_operator": "Z1Z2" # <Z_0 Z_1>
-}
-
-# --- Test Simulation: Single Qubit Rotation ---
-TEST_SIM_PARAMS = {
-    "n_qubits": 1,
-    "B_range": [round(0.1 * np.pi * i, 3) for i in range(11)], # 0 to pi
-    "measurement_operator": "Z0" # <Z> on qubit 0
-}
-
-
-# --- ML Parameters ---
+# --- ML Parameters (Keep defaults for now, adjust after data generation) ---
 ML_MODEL_PARAMS = {
-    "input_dim": None, # To be set dynamically based on simulation feature count
-    "output_dim": 1, # Predicting a single expectation value
-    "hidden_layers": [64, 32], # Example architecture
+    "input_dim": None,
+    "output_dim": 1, # Still predicting one primary value (<Z1Z2>)
+    "hidden_layers": [128, 64, 32], # Slightly deeper for potentially more complex data
     "activation": "relu",
-    "optimizer": "adam", # Default optimizer
+    "optimizer": "adam",
     "learning_rate": 0.001,
     "loss": "mean_squared_error",
-    "epochs": 150, # Increased epochs slightly for potential overfitting goal
+    "epochs": 200,
     "batch_size": 32,
-    "validation_split": 0.2, # Fraction of *training* data used for validation during training
-    "test_split": 0.2 # Fraction of *total* data held out for final testing
+    "validation_split": 0.2,
+    "test_split": 0.2
 }
 
 # --- Data Storage Paths ---
-BASE_SAVE_PATH = "./project_results_mvp" # Changed for MVP stage
+BASE_SAVE_PATH = f"./project_results_nq{N_QUBITS}_t{DELTA_T:.2f}" # More descriptive path
 DATA_PATH = os.path.join(BASE_SAVE_PATH, "simulation_data")
 ML_RESULTS_PATH = os.path.join(BASE_SAVE_PATH, "ml_results")
 
@@ -66,4 +68,13 @@ ML_RESULTS_PATH = os.path.join(BASE_SAVE_PATH, "ml_results")
 os.makedirs(DATA_PATH, exist_ok=True)
 os.makedirs(ML_RESULTS_PATH, exist_ok=True)
 
-print(f"Configuration loaded. Data will be saved in: {BASE_SAVE_PATH}")
+print(f"Configuration loaded:")
+print(f"  N_Qubits: {N_QUBITS}, Delta_T: {DELTA_T}, N_Steps: {N_STEPS_RANGE[0]}-{N_STEPS_RANGE[-1]}")
+print(f"  J Range: {J_RANGE[0]} to {J_RANGE[-1]} ({len(J_RANGE)} points)")
+print(f"  B Range: {B_RANGE[0]} to {B_RANGE[-1]} ({len(B_RANGE)} points)")
+print(f"  Initial State: {INITIAL_STATE_TYPE}")
+print(f"  Simulation Mode: {SIMULATION_MODE}" + (f", Shots: {N_SHOTS}" if SIMULATION_MODE == 'shots' else ""))
+print(f"  Validate Trotter (<= {VALIDATION_MAX_QUBITS} qubits): {VALIDATE_TROTTER}")
+print(f"  Compute Entanglement (Partition: {ENTANGLEMENT_PARTITION}): {COMPUTE_ENTANGLEMENT}")
+print(f"  Data will be saved in: {BASE_SAVE_PATH}")
+print("-" * 30)
