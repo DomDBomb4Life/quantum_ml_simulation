@@ -9,7 +9,7 @@ N_QUBITS = 4 # Increased system size (3 is too small for complexity)
 
 # Objective 5: Extend Evolution Time and Parameter Ranges
 DELTA_T = 0.05 # Smaller time step for better accuracy
-N_STEPS_RANGE = list(range(1, 21)) # n = 1 to 20 (total time T up to 1.0)
+N_STEPS_RANGE = list(range(1, 41)) # n = 1 to 20 (total time T up to 1.0)
 
 # Parameter Ranges (using linspace for density)
 # J: Interaction strength

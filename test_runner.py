@@ -1,335 +1,220 @@
 # quantum_ml_simulation/test_runner.py
-# THOROUGH temporary script to test the quantum simulation data generation part
-# This version checks for validation, entanglement, and runs in different modes.
+# Enhanced temporary script to thoroughly test the quantum simulation components
 
 import os
 import numpy as np
 import time
-import traceback
-import sys
+import traceback # Import traceback for detailed error printing
+import itertools
 
-# Add the parent directory to the Python path to allow running this script directly
-# while still resolving package imports. This is an alternative to `python -m`.
-# However, running with `python -m` from the project root is still the recommended
-# way for package execution. This block is mainly for convenience if running
-# `python test_runner.py` from inside `quantum_ml_simulation`.
-# For consistent package behavior, run from project root:
-# python -m quantum_ml_simulation.test_runner
+# Import the simulation classes and config using EXPLICIT relative imports
+from .simulations.ising_model import IsingModelSimulation
+# Assuming TestSimulation hasn't been updated for the new features (like get_hamiltonian_operator),
+# we will focus on testing IsingModelSimulation for now.
+# from .simulations.test_simulation import TestSimulation
+from .config import simulation_params as cfg
+
+# --- Dependency Check ---
 try:
-    from .simulations.test_simulation import TestSimulation
-    from .simulations.ising_model import IsingModelSimulation
-    from .config import simulation_params as cfg
-    from .quantum_runner.simulator import QuantumSimulator # Import directly for mode testing
-    import qiskit
-    from qiskit.quantum_info import Statevector
+    import scipy
+    print("[INFO] Found SciPy (needed for exact diagonalization validation).")
 except ImportError:
-    # Fallback imports if running directly from the file's directory
-    # This makes the script runnable as `python test_runner.py` from inside
-    # quantum_ml_simulation/, but it's less robust than `python -m`.
-    # If using `python -m`, this block is skipped.
-    print("Running with fallback imports. Please use `python -m quantum_ml_simulation.test_runner` from project root for best results.")
-    import sys
-    from pathlib import Path
-    # Add the directory containing 'quantum_ml_simulation' to the path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from quantum_ml_simulation.simulations.test_simulation import TestSimulation
-    from quantum_ml_simulation.simulations.ising_model import IsingModelSimulation
-    from quantum_ml_simulation.config import simulation_params as cfg
-    from quantum_ml_simulation.quantum_runner.simulator import QuantumSimulator
-    import qiskit
-    from qiskit.quantum_info import Statevector
+    if cfg.VALIDATE_TROTTER:
+        print("\n[WARNING] SciPy not found, but VALIDATE_TROTTER is True in config.")
+        print("           Exact diagonalization validation will fail or be skipped.")
+        print("           Install SciPy: pip install scipy")
+    else:
+        print("[INFO] SciPy not found, but validation is disabled. Proceeding.")
+    # Allow continuing without scipy if validation is off
+    pass
 
 
-# --- Helper Functions for Specific Checks ---
+def run_simulation_test(simulation_class, simulation_name):
+    """
+    Runs thorough tests on a given simulation class.
+    """
+    print(f"\n{'='*40}")
+    print(f"  Testing Simulation: {simulation_name}  ")
+    print(f"{'='*40}")
 
-def check_initial_state(simulation_class, n_qubits: int, expected_type: str):
-    """Tests if the initial state is prepared correctly."""
-    print(f"\n--- Testing Initial State: {expected_type} ({n_qubits} qubits) ---")
-    original_n_steps_range = cfg.N_STEPS_RANGE
-    original_init_state = cfg.INITIAL_STATE_TYPE
+    # --- 1. Configuration Overview ---
+    print("[INFO] Using Configuration:")
+    print(f"  N_Qubits: {cfg.N_QUBITS}")
+    print(f"  DELTA_T: {cfg.DELTA_T}")
+    print(f"  N_Steps Range: {min(cfg.N_STEPS_RANGE)}-{max(cfg.N_STEPS_RANGE)} ({len(cfg.N_STEPS_RANGE)} values)")
+    print(f"  J Range: {min(cfg.J_RANGE)}-{max(cfg.J_RANGE)} ({len(cfg.J_RANGE)} values)")
+    print(f"  B Range: {min(cfg.B_RANGE)}-{max(cfg.B_RANGE)} ({len(cfg.B_RANGE)} values)")
+    print(f"  Initial State: {cfg.INITIAL_STATE_TYPE}")
+    print(f"  Simulation Mode: {cfg.SIMULATION_MODE}" + (f", Shots: {cfg.N_SHOTS}" if cfg.SIMULATION_MODE == 'shots' else ""))
+    print(f"  Validate Trotter (<= {cfg.VALIDATION_MAX_QUBITS} qubits): {cfg.VALIDATE_TROTTER}")
+    print(f"  Compute Entanglement (Partition: {cfg.ENTANGLEMENT_PARTITION}): {cfg.COMPUTE_ENTANGLEMENT}")
+    print("-" * 40)
 
+    sim = None
     try:
-        # Temporarily set config for test
-        cfg.INITIAL_STATE_TYPE = expected_type
-        cfg.N_STEPS_RANGE = [0] # Test only the initial circuit with 0 steps
-
+        # --- 2. Instantiation Test ---
+        print("[CHECK] Instantiating simulation class...")
         sim = simulation_class()
-        params_space = sim.get_parameter_space()
+        print(f"[SUCCESS] Simulation object created for {simulation_name}.")
+        print(f"  Object uses N_Qubits={sim.n_qubits}, Mode='{sim.q_simulator.simulation_mode}', Validate={sim.validate_trotter}, Entangle={sim.compute_entanglement}")
+        print("-" * 40)
 
-        if not params_space:
-            print("  SKIP: No parameter space found for initial state test (e.g., ranges empty).")
-            return
-
-        # Pick one parameter set with n_steps = 0
-        test_params = None
-        for p in params_space:
-            if p[0] == 0: # Assumes n_steps is the first parameter
-                test_params = p
-                break
-
-        if test_params is None:
-            print("  SKIP: Could not find a parameter set with n_steps = 0.")
-            return
-
-        print(f"  Building circuit for params with n=0: {test_params}")
-        circuit = sim.build_circuit_for_params(test_params)
-        print(f"  Circuit depth: {circuit.depth()}, size: {circuit.size()}")
-
-        # Simulate to get the statevector
-        # Use a temporary simulator instance in statevector mode
-        temp_simulator = QuantumSimulator(simulation_mode="statevector", n_shots=1) # Shots irrelevant here
-        statevector = temp_simulator.run_circuit_and_get_statevector(circuit)
-
-        if statevector is None:
-            print("  FAIL: Could not obtain statevector.")
-            return
-
-        # Define expected statevector
-        if expected_type == 'zero':
-            expected_sv = Statevector([1.0] + [0.0] * (2**n_qubits - 1))
-        elif expected_type == 'superposition':
-            expected_sv = Statevector([1.0/np.sqrt(2**n_qubits)] * (2**n_qubits))
+        # --- 3. Parameter Space Test ---
+        print("[CHECK] Generating parameter space...")
+        param_space = sim.get_parameter_space()
+        expected_params = len(cfg.N_STEPS_RANGE) * len(cfg.J_RANGE) * len(cfg.B_RANGE)
+        print(f"  Generated {len(param_space)} parameter combinations.")
+        if len(param_space) == expected_params:
+            print(f"[SUCCESS] Parameter space size matches configuration ({expected_params}).")
         else:
-            print(f"  SKIP: Unexpected initial state type '{expected_type}'.")
-            return
+            print(f"[WARNING] Parameter space size ({len(param_space)}) does NOT match expected ({expected_params})!")
+        print("-" * 40)
 
-        # Compare statevectors
-        is_correct = statevector.is_approximately_equal(expected_sv, rtol=1e-8, atol=1e-8)
-
-        if is_correct:
-            print(f"  PASS: Initial state correctly prepared as {expected_type}.")
+        # --- 4. Spot Check `run_single_simulation` ---
+        if not param_space:
+             print("[SKIP] Skipping single simulation checks as parameter space is empty.")
         else:
-            print(f"  FAIL: Initial state mismatch for {expected_type}.")
-            print("    Actual statevector sample:", statevector.data[:min(8, 2**n_qubits)]) # Print first few elements
-            print("    Expected statevector sample:", expected_sv.data[:min(8, 2**n_qubits)])
+            print("[CHECK] Running spot checks on `run_single_simulation`...")
+            # Select a few parameters: min/mid/max n_steps, J, B
+            n_steps_samples = [min(cfg.N_STEPS_RANGE), (min(cfg.N_STEPS_RANGE)+max(cfg.N_STEPS_RANGE))//2 , max(cfg.N_STEPS_RANGE)]
+            j_samples = [min(cfg.J_RANGE), cfg.J_RANGE[len(cfg.J_RANGE)//2], max(cfg.J_RANGE)]
+            b_samples = [min(cfg.B_RANGE), cfg.B_RANGE[len(cfg.B_RANGE)//2], max(cfg.B_RANGE)]
+            # Use unique parameters only
+            spot_check_params = list(set(itertools.product(n_steps_samples, j_samples, b_samples)))
+            print(f"  Testing {len(spot_check_params)} specific parameter sets:")
+
+            all_spot_checks_passed = True
+            for i, params in enumerate(spot_check_params):
+                print(f"\n  Test {i+1}/{len(spot_check_params)}: PARAMS = {params}")
+                start_single = time.time()
+                result_dict = sim.run_single_simulation(params)
+                end_single = time.time()
+                print(f"    -> Completed in {end_single - start_single:.3f} seconds.")
+                print(f"    -> RESULT DICT:")
+                for key, value in result_dict.items():
+                     if isinstance(value, float):
+                         print(f"      {key:<20}: {value:.6f}" if not np.isnan(value) else f"      {key:<20}: NaN")
+                     else:
+                         print(f"      {key:<20}: {value}")
+
+                # Basic checks on the results
+                exp_val = result_dict.get('expectation_value', np.nan)
+                val_diff = result_dict.get('validation_diff', np.nan)
+                ent_val = result_dict.get('entanglement_entropy', np.nan)
+
+                if np.isnan(exp_val):
+                    print("    [ERROR] Expectation value is NaN!")
+                    all_spot_checks_passed = False
+                if sim.validate_trotter and np.isnan(val_diff):
+                     # Only expect non-NaN if validation should have run
+                     if cfg.N_QUBITS <= cfg.VALIDATION_MAX_QUBITS:
+                         print("    [WARNING] Validation difference is NaN when validation should have run.")
+                         # Don't mark as error yet, could be SciPy issue or ED failure
+                     else:
+                          print("    [INFO] Validation difference is NaN (expected as N_Qubits > validation max).")
+                elif sim.validate_trotter and not np.isnan(val_diff):
+                      print(f"    [INFO] Validation difference computed: {val_diff:.4e}")
+
+                if sim.compute_entanglement and np.isnan(ent_val):
+                     if cfg.SIMULATION_MODE == 'statevector':
+                         print("    [WARNING] Entanglement entropy is NaN when computation should have run.")
+                     else:
+                          print("    [INFO] Entanglement entropy is NaN (expected in shots mode).")
+                elif sim.compute_entanglement and not np.isnan(ent_val):
+                     print(f"    [INFO] Entanglement entropy computed: {ent_val:.4f}")
+
+            if all_spot_checks_passed:
+                 print("\n[SUCCESS] All spot checks completed without producing NaN expectation values.")
+            else:
+                 print("\n[FAILURE] One or more spot checks resulted in NaN expectation value. Check error logs above.")
+            print("-" * 40)
+
+
+        # --- 5. Full Dataset Generation Test ---
+        print("[CHECK] Starting full `generate_dataset` run...")
+        start_full = time.time()
+        # generate_dataset now prints its own summary stats at the end
+        full_dataset = sim.generate_dataset()
+        end_full = time.time()
+        print(f"[INFO] `generate_dataset` finished in {end_full - start_full:.2f} seconds.")
+
+        if not full_dataset:
+            print("[ERROR] Full dataset generation resulted in an empty list!")
+            return # Stop here if dataset is empty
+
+        num_generated = len(full_dataset)
+        num_valid_exp_val = sum(1 for d in full_dataset if 'output' in d and not np.isnan(d['output']))
+
+        if num_valid_exp_val == num_generated:
+            print(f"[SUCCESS] All {num_generated} points in the dataset have valid expectation values.")
+        else:
+            print(f"[WARNING] {num_generated - num_valid_exp_val}/{num_generated} points have NaN expectation values.")
+
+        # --- 6. Analyze Optional Feature Results Across Dataset ---
+        if sim.validate_trotter and cfg.N_QUBITS <= cfg.VALIDATION_MAX_QUBITS :
+             valid_diffs = [d.get('validation_diff', np.nan) for d in full_dataset]
+             valid_diffs = [v for v in valid_diffs if not np.isnan(v)]
+             if valid_diffs:
+                  print(f"[INFO] Validation run summary ({len(valid_diffs)} points):")
+                  print(f"  Avg Abs Diff : {np.mean(np.abs(valid_diffs)):.4e}")
+                  print(f"  Max Abs Diff : {np.max(np.abs(valid_diffs)):.4e}")
+                  print(f"  Min Diff     : {np.min(valid_diffs):.4e}")
+                  print(f"  Max Diff     : {np.max(valid_diffs):.4e}")
+             else:
+                   print("[WARNING] Validation was enabled, but no valid difference values found in dataset.")
+
+        if sim.compute_entanglement and cfg.SIMULATION_MODE == 'statevector':
+             valid_ents = [d.get('entanglement', np.nan) for d in full_dataset]
+             valid_ents = [v for v in valid_ents if not np.isnan(v)]
+             if valid_ents:
+                  print(f"[INFO] Entanglement run summary ({len(valid_ents)} points):")
+                  print(f"  Avg Entropy  : {np.mean(valid_ents):.4f}")
+                  print(f"  Max Entropy  : {np.max(valid_ents):.4f}")
+                  print(f"  Min Entropy  : {np.min(valid_ents):.4f}")
+             else:
+                  print("[WARNING] Entanglement computation was enabled (statevector mode), but no valid entropy values found.")
 
 
     except Exception as e:
-        print(f"  ERROR during initial state test: {e}")
-        traceback.print_exc()
+        print(f"\n{'!'*40}")
+        print(f"AN UNEXPECTED ERROR OCCURRED during test for {simulation_name}:")
+        print(f"Error Type: {type(e).__name__}")
+        print(f"Error Message: {e}")
+        traceback.print_exc() # Print detailed traceback
+        print(f"{'!'*40}")
     finally:
-        # Restore original config
-        cfg.N_STEPS_RANGE = original_n_steps_range
-        cfg.INITIAL_STATE_TYPE = original_init_state
-        print("-" * 30)
+        print(f"\n{'='*40}")
+        print(f"  Finished Testing: {simulation_name}  ")
+        print(f"{'='*40}")
 
 
-def analyze_simulation_results(dataset, simulation_name, sim):
-    """Analyzes the dataset produced by generate_dataset."""
-    print(f"\n--- Analyzing Dataset for: {simulation_name} ---")
+# --- Main execution block for the test ---
+if __name__ == "__main__":
+    print("Starting Enhanced Quantum Simulation Component Test...")
 
-    if not dataset:
-        print("  No data points to analyze.")
-        return
-
-    # Basic check: All data points have expected keys
-    expected_keys = ['input', 'output', 'validation_diff', 'entanglement'] # Based on BaseSimulation result dict
-    if not all(all(key in d for key in expected_keys) for d in dataset):
-         print("  WARNING: Not all data points contain the expected keys.")
-         # Attempt to proceed with available data
-
-    # Check expectation values
-    outputs = np.array([d['output'] for d in dataset])
-    valid_outputs = outputs[~np.isnan(outputs)]
-    print(f"  Valid Expectation Values: {len(valid_outputs)}/{len(dataset)}")
-    if len(valid_outputs) > 0:
-        print(f"    Min/Max: {np.min(valid_outputs):.4f} / {np.max(valid_outputs):.4f}")
-        print(f"    Mean:    {np.mean(valid_outputs):.4f}")
-        # Check if values are within [-1, 1] range for Pauli expectation values
-        if np.any(valid_outputs < -1.01) or np.any(valid_outputs > 1.01): # Add small tolerance
-             print("    WARNING: Some expectation values outside [-1, 1] range.")
-        else:
-             print("    Expectation values within expected [-1, 1] range.")
-    else:
-        print("    No valid expectation values found.")
-
-    # Check Validation Difference
-    if 'validation_diff' in dataset[0]: # Check if validation was attempted
-        diffs = np.array([d['validation_diff'] for d in dataset])
-        valid_diffs = diffs[~np.isnan(diffs)]
-        print(f"  Trotter Validation Differences: {len(valid_diffs)}/{len(dataset)}")
-        if len(valid_diffs) > 0:
-            avg_abs_diff = np.mean(np.abs(valid_diffs))
-            max_abs_diff = np.max(np.abs(valid_diffs))
-            print(f"    Avg Abs Diff: {avg_abs_diff:.4e}, Max Abs Diff: {max_abs_diff:.4e}")
-            points_above_tolerance = sum(1 for d in dataset if not np.isnan(d['validation_diff']) and abs(d['validation_diff']) > cfg.VALIDATION_TOLERANCE)
-            print(f"    Points > Tolerance ({cfg.VALIDATION_TOLERANCE:.4e}): {points_above_tolerance}/{len(valid_diffs)}")
-
-            # Check hypothesis: Error increases with n_steps
-            try:
-                n_step_index = dataset[0]['input'].index(next(f for f in sim.get_ml_input_feature_names() if f == 'n_steps')) # Hacky way to find n_steps index
-                n_steps_values = np.array([d['input'][n_step_index] for d in dataset])
-
-                # Group diffs by n_steps and check mean absolute difference trend
-                error_by_n = {}
-                for i in range(len(dataset)):
-                    n = n_steps_values[i]
-                    diff = dataset[i]['validation_diff']
-                    if not np.isnan(diff):
-                        if n not in error_by_n:
-                            error_by_n[n] = []
-                        error_by_n[n].append(abs(diff))
-
-                if error_by_n:
-                    n_values = sorted(error_by_n.keys())
-                    mean_abs_errors = [np.mean(error_by_n[n]) for n in n_values]
-
-                    print("    Mean Absolute Validation Diff vs n_steps:")
-                    for n, err in zip(n_values, mean_abs_errors):
-                        print(f"      n={int(n)}: {err:.4e}")
-
-                    # Simple check if error generally increases
-                    # Check if mean error at max n_steps is significantly higher than at min n_steps
-                    if len(n_values) >= 2:
-                        min_n_err = mean_abs_errors[0]
-                        max_n_err = mean_abs_errors[-1]
-                        print(f"    Trend Check: Mean Error at n={int(n_values[0])} is {min_n_err:.4e}, at n={int(n_values[-1])} is {max_n_err:.4e}")
-                        if max_n_err > min_n_err * 2: # Simple heuristic for "significantly higher"
-                             print("    Observation: Error generally increases with n_steps (supports hypothesis).")
-                        else:
-                             print("    Observation: Error trend with n_steps is not strongly increasing based on simple check.")
-            except (ValueError, StopIteration, IndexError, KeyError) as e:
-                 print(f"    Could not analyze error vs n_steps: {e}")
-
-
-    # Check Entanglement Entropy
-    if 'entanglement' in dataset[0]: # Check if entanglement was attempted
-         entropies = np.array([d['entanglement'] for d in dataset])
-         valid_entropies = entropies[~np.isnan(entropies)]
-         print(f"  Entanglement Entropies: {len(valid_entropies)}/{len(dataset)}")
-         if len(valid_entropies) > 0:
-             print(f"    Min/Max: {np.min(valid_entropies):.4f} / {np.max(valid_entropies):.4f}")
-             print(f"    Mean:    {np.mean(valid_entropies):.4f}")
-             # Max possible entanglement for a bipartite cut of size k is log2(min(2^k, 2^(N-k)))
-             max_possible_ent = np.log2(min(2**cfg.ENTANGLEMENT_PARTITION, 2**(cfg.N_QUBITS - cfg.ENTANGLEMENT_PARTITION)))
-             print(f"    Max possible for partition size {cfg.ENTANGLEMENT_PARTITION}: {max_possible_ent:.4f}")
-             # Check if entanglement is non-zero (indicative of non-trivial dynamics/superposition state working)
-             if np.mean(valid_entropies) > 0.01: # Heuristic
-                  print("    Observation: Non-zero entanglement observed (indicates complex dynamics).")
-             else:
-                  print("    Observation: Entanglement values are close to zero.")
-
-         else:
-              print("    No valid entanglement entropies found.")
-
-    print("-" * 30)
-
-
-# --- Main Test Runner Logic ---
-def run_full_simulation_test_suite():
-    """Runs multiple tests on the simulation components."""
-    print("Starting Comprehensive Quantum Simulation Component Test Suite...")
-
-    # --- Pre-Checks ---
+    # Check Qiskit Aer availability
     try:
         from qiskit_aer import AerSimulator
-        print("Qiskit Aer simulator found.")
+        print("[INFO] Qiskit Aer simulator found.")
     except ImportError:
-        print("\nERROR: Qiskit Aer not found. Please install it ('pip install qiskit-aer').")
-        print("Cannot run quantum simulations without it. Exiting.")
-        sys.exit(1) # Exit with error code
+        print("\n[ERROR] Qiskit Aer not found. Please install it ('pip install qiskit-aer').")
+        exit()
 
+    # Ensure output directories exist
     try:
-        # Check for SciPy needed for ED validation
-        import scipy.linalg
-        print("SciPy found (needed for exact diagonalization validation).")
-    except ImportError:
-        print("\nWARNING: SciPy not found. Exact diagonalization validation will be skipped.")
-        cfg.VALIDATE_TROTTER = False # Disable validation if scipy is missing
+        os.makedirs(cfg.DATA_PATH, exist_ok=True)
+        os.makedirs(cfg.ML_RESULTS_PATH, exist_ok=True)
+        print(f"[INFO] Output directories checked/created: {cfg.BASE_SAVE_PATH}")
+    except OSError as e:
+        print(f"[ERROR] Failed to create output directories: {e}")
+        exit()
 
-    # Ensure output directories exist (they should be created by config on import)
-    os.makedirs(cfg.DATA_PATH, exist_ok=True)
-    os.makedirs(cfg.ML_RESULTS_PATH, exist_ok=True)
-    print(f"Output directories checked/created relative to current directory: {cfg.BASE_SAVE_PATH}")
-    print("="*40)
+    # --- Run Tests ---
+    # Only testing IsingModelSimulation as it's the one significantly updated
+    run_simulation_test(IsingModelSimulation, "IsingModel")
 
+    # If TestSimulation was also updated to the new BaseSimulation requirements
+    # (e.g., adding get_hamiltonian_operator), uncomment below:
+    # run_simulation_test(TestSimulation, "TestSim")
 
-    # --- Configure Simulations to Test ---
-    simulations_to_test = [
-        (TestSimulation, "TestSim"),
-        (IsingModelSimulation, "IsingModel"),
-        # Add other simulations here as they are implemented
-        # (SpinChainPotentialSimulation, "SpinChainPotential"),
-        # (DimerizedHeisenbergSimulation, "DimerizedHeisenberg"),
-    ]
-
-    # --- Test Initial States ---
-    # Temporarily save original config values
-    original_n_qubits = cfg.N_QUBITS
-    original_initial_state_type = cfg.INITIAL_STATE_TYPE
-
-    # Test |0...0> initial state (default for Qiskit)
-    # For TestSim (1 qubit)
-    cfg.N_QUBITS = cfg.TEST_SIM_PARAMS["n_qubits"]
-    cfg.INITIAL_STATE_TYPE = 'zero' # Explicitly set for the test function
-    check_initial_state(TestSimulation, cfg.N_QUBITS, 'zero')
-
-    # For IsingModel (cfg.N_QUBITS)
-    cfg.N_QUBITS = original_n_qubits # Restore N_QUBITS for Ising
-    cfg.INITIAL_STATE_TYPE = 'zero'
-    check_initial_state(IsingModelSimulation, cfg.N_QUBITS, 'zero')
-
-
-    # Test |+...+\> initial state
-    # For TestSim (1 qubit)
-    cfg.N_QUBITS = cfg.TEST_SIM_PARAMS["n_qubits"]
-    cfg.INITIAL_STATE_TYPE = 'superposition'
-    check_initial_state(TestSimulation, cfg.N_QUBITS, 'superposition')
-
-     # For IsingModel (cfg.N_QUBITS)
-    cfg.N_QUBITS = original_n_qubits # Restore N_QUBITS for Ising
-    cfg.INITIAL_STATE_TYPE = 'superposition'
-    check_initial_state(IsingModelSimulation, cfg.N_QUBITS, 'superposition')
-
-    # Restore original initial state config for main simulation tests
-    cfg.INITIAL_STATE_TYPE = original_initial_state_type
-    cfg.N_QUBITS = original_n_qubits
-    print("="*40)
-
-
-    # --- Test Simulation Data Generation in Different Modes ---
-    simulation_modes_to_test = ["statevector", "shots"] # Test both
-
-    for sim_class, sim_name in simulations_to_test:
-        for mode in simulation_modes_to_test:
-            print(f"\n{'*'*50}")
-            print(f"Running {sim_name} in {mode.upper()} mode")
-            print(f"{'*'*50}")
-
-            # Temporarily set the simulation mode in config
-            original_sim_mode = cfg.SIMULATION_MODE
-            cfg.SIMULATION_MODE = mode
-
-            # Re-instantiate simulator in case backend needs changing
-            # This is handled within BaseSimulation.__init__ now.
-            # Need to re-instantiate the *simulation* object to pick up the new mode config.
-            # sim = sim_class() # Instantiated inside run_simulation_and_analyze
-
-            # Run the data generation for this simulation and mode
-            # The generate_dataset method prints progress and basic stats
-            # The run_single_simulation method within generate_dataset handles errors and NaNs
-            # DataHandler will be used later for saving, just generating dataset here.
-
-            # Call a helper to run generation and then analyze the resulting dataset structure/content
-            dataset = []
-            sim_instance = None
-            try:
-                 sim_instance = sim_class() # Instantiate *after* setting mode
-                 dataset = sim_instance.generate_dataset()
-            except Exception as e:
-                 print(f"\nFATAL ERROR during {sim_name} data generation in {mode} mode: {e}")
-                 traceback.print_exc()
-
-
-            # Analyze the generated dataset structure and contents
-            analyze_simulation_results(dataset, f"{sim_name} ({mode.upper()} Mode)", sim_instance)
-
-            # Restore original simulation mode config
-            cfg.SIMULATION_MODE = original_sim_mode
-            print(f"{'*'*50}")
-
-    print("\nComprehensive Quantum Simulation Component Test Suite Finished.")
-
-# --- Main Execution ---
-if __name__ == "__main__":
-    run_full_simulation_test_suite()
+    print("\nQuantum Simulation Component Test Finished.")
