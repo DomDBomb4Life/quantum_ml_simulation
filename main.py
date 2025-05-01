@@ -244,61 +244,76 @@ def run_experiment(simulation_class, simulation_name: str, force_generate_data: 
     # 5. Evaluate Model
     print("\n[5] Evaluating Model Performance...")
     eval_results = None
-    # Only evaluate on the TEST set if it exists and has samples
+    evaluator = None # Define evaluator instance here
     if X_test is not None and y_test is not None and len(y_test) > 0:
         try:
-            evaluator = ModelEvaluator(trainer)
-            # Convert X_test back to DataFrame WITH CORRECT COLUMNS for evaluator
-            X_test_df = pd.DataFrame(X_test, columns=feature_names) # Use the final selected feature names
+            evaluator = ModelEvaluator(trainer) # Instantiate evaluator
+            X_test_df = pd.DataFrame(X_test, columns=feature_names)
             y_test_series = pd.Series(y_test, name=target_column)
-            # evaluate now gets df with only ML input features
-            eval_results = evaluator.evaluate(X_test_df, y_test_series)
+            eval_results = evaluator.evaluate(X_test_df, y_test_series) # Contains metrics and df_results
 
-            # Calculate specific distance metric (e.g., MSE) on test set
-            _ = evaluator.calculate_distance(eval_results["y_test"], eval_results["y_pred"], metric='mse')
+            # Calculate specific distance metric (optional print here)
+            # _ = evaluator.calculate_distance(eval_results["y_test"], eval_results["y_pred"], metric='mse')
 
         except Exception as e:
             print(f"Error during model evaluation: {e}")
             # import traceback; traceback.print_exc() # Uncomment for debugging
-            # Proceed without evaluation results if it fails
     else:
         print("Skipping evaluation on test set as it's not available or empty.")
 
 
-    # 6. Perform Analysis and Visualization (using Test Set results if available)
+    # 6. Perform Analysis and Visualization
     print("\n[6] Generating Analysis Plots...")
     results_dir = os.path.join(cfg.ML_RESULTS_PATH, simulation_name)
     plot_save_path_pvsa = os.path.join(results_dir, f"{simulation_name}_pred_vs_actual.png")
-    plot_save_path_evsn = os.path.join(results_dir, f"{simulation_name}_error_vs_nsteps.png")
+    plot_save_path_abs_evsn = os.path.join(results_dir, f"{simulation_name}_abs_error_vs_nsteps.png")
+    plot_save_path_rel_evsn = os.path.join(results_dir, f"{simulation_name}_rel_error_vs_nsteps.png") # New path for relative error
+    plot_save_path_history = os.path.join(results_dir, f"{simulation_name}_training_history.png") # New path for history
 
-    if eval_results and 'df_results' in eval_results:
+    if evaluator and eval_results and 'df_results' in eval_results:
         try:
-            # df_results in eval_results should have columns = expected_feature_names + y_actual + y_predicted + errors
-            # The df_results already contains the correct features selected earlier
+            # Plot Predictions vs Actual (includes R2)
             evaluator.plot_predictions_vs_actual(eval_results["df_results"],
-                                                title=f"{simulation_name}: Predictions vs Actual (Test Set)",
+                                                title=f"{simulation_name}: Predictions vs Actual (Test Set, R²={eval_results['r2_score']:.4f})", # Add R2 to title
                                                 save_path=plot_save_path_pvsa)
 
-            # df_results correctly contains 'n_steps' because it was selected earlier
+            # Plot Absolute Error vs n_steps (includes trend)
             evaluator.plot_error_vs_n_steps(eval_results["df_results"],
-                                            title=f"{simulation_name}: Mean Abs Error vs n_steps (Test Set)",
-                                            save_path=plot_save_path_evsn)
+                                            error_type='absolute_error',
+                                            title=f"{simulation_name}: Mean Absolute Error vs n_steps (Test Set)",
+                                            save_path=plot_save_path_abs_evsn)
+
+            # Plot Relative Error vs n_steps (includes trend)
+            evaluator.plot_error_vs_n_steps(eval_results["df_results"],
+                                            error_type='relative_error',
+                                            title=f"{simulation_name}: Mean Relative Error vs n_steps (Test Set)",
+                                            save_path=plot_save_path_rel_evsn)
+
         except Exception as e:
-             print(f"Error generating plots: {e}")
+             print(f"Error generating evaluation plots: {e}")
              # import traceback; traceback.print_exc() # Uncomment for debugging
     else:
-        print("Skipping plot generation as evaluation results are not available (no test set).")
+        print("Skipping evaluation plot generation as results are not available.")
+
+    # Plot Training History (if history object exists)
+    if evaluator and training_history:
+        try:
+            evaluator.plot_training_history(training_history, save_path=plot_save_path_history)
+        except Exception as e:
+            print(f"Error generating training history plot: {e}")
+            # import traceback; traceback.print_exc() # Uncomment for debugging
+    else:
+        print("Skipping training history plot generation (evaluator or history missing).")
 
 
     # 7. Save All Results
     print("\n[7] Saving All Results...")
+    # ... (Saving logic remains the same, save_ml_results already handles the enhanced eval_results dict) ...
     if eval_results:
-        # Save full results including metrics, predictions, and the df_results
         data_handler.save_ml_results(eval_results, training_history, simulation_name, trainer)
     else:
-        # Save at least the model and history if evaluation failed/skipped
         print("Saving model and training history only (evaluation results missing).")
-        minimal_results = {} # Empty dict for metrics part
+        minimal_results = {}
         data_handler.save_ml_results(minimal_results, training_history, simulation_name, trainer)
 
 
@@ -308,25 +323,11 @@ def run_experiment(simulation_class, simulation_name: str, force_generate_data: 
 
 # --- Main Execution Block ---
 if __name__ == "__main__":
-    # Suppress specific warnings if needed (e.g., TensorFlow future warnings)
-    # warnings.filterwarnings("ignore", category=FutureWarning)
-    # tf.get_logger().setLevel('ERROR') # Suppress TensorFlow INFO messages
-
-    # Define which simulations to run
-    # Add other simulations to this dictionary when they are implemented
+    # ... (Rest of the main block remains the same) ...
     simulations_to_run = {
         "IsingModel": IsingModelSimulation,
-        # "TestSim": TestSimulation, # Uncomment if TestSimulation is complete and configured
-        # "SpinChainPotential": SpinChainPotentialSimulation,
-        # "DimerizedHeisenberg": DimerizedHeisenbergSimulation,
     }
-
-    # Control whether to force regeneration of quantum data
-    # Set to True to always re-run quantum sims, False to load if possible
-    FORCE_DATA_GENERATION = False
-
-    # Run experiments sequentially
+    FORCE_DATA_GENERATION = False # Set to True to regenerate data
     for name, sim_class in simulations_to_run.items():
         run_experiment(sim_class, name, force_generate_data=FORCE_DATA_GENERATION)
-
     print("\nAll specified experiments have been run.")

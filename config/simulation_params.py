@@ -1,80 +1,92 @@
 # quantum_ml_simulation/config/simulation_params.py
-# Contains configuration parameters for the simulations
 import numpy as np
 import os
 
 # --- Core Simulation Setup ---
-# Objective 4: Scale System Size
-N_QUBITS = 4 # Increased system size (3 is too small for complexity)
+# Keep these as defaults, can be overridden by generate_data.py args
+N_QUBITS = 4 # Default N
+DELTA_T = 0.05 # Default dt
+N_STEPS_RANGE = list(range(1, 21)) # Default n steps (Tmax = 1.0)
+J_RANGE = np.linspace(0.1, 2.0, 11).round(3).tolist() # Reduced density for faster testing
+B_RANGE = np.linspace(0.0, 1.0, 11).round(3).tolist() # Reduced density for faster testing
+INITIAL_STATE_TYPE = "superposition"
+SIMULATION_MODE = "statevector"
+N_SHOTS = 2048
+VALIDATE_TROTTER = True
+VALIDATION_MAX_QUBITS = 4
+VALIDATION_TOLERANCE = 0.005
+COMPUTE_ENTANGLEMENT = True
+ENTANGLEMENT_PARTITION = N_QUBITS // 2
 
-# Objective 5: Extend Evolution Time and Parameter Ranges
-DELTA_T = 0.05 # Smaller time step for better accuracy
-N_STEPS_RANGE = list(range(1, 41)) # n = 1 to 20 (total time T up to 1.0)
-
-# Parameter Ranges (using linspace for density)
-# J: Interaction strength
-J_RANGE = np.linspace(0.1, 2.0, 21).round(3).tolist() # 0.1 to 2.0 (21 points)
-# B: Transverse field strength
-B_RANGE = np.linspace(0.0, 1.0, 21).round(3).tolist() # 0.0 to 1.0 (21 points)
-
-# Objective 5: Use Superposition Initial State (handled in simulation class)
-INITIAL_STATE_TYPE = "superposition" # 'zero' or 'superposition'
-
-# Objective 6: Incorporate Shot-Based Measurements
-SIMULATION_MODE = "statevector" # 'statevector' or 'shots'
-N_SHOTS = 2048 # Number of shots for shot-based simulation
-
-# --- Controls for Advanced Features ---
-# Objective 2: Add Validation Against Exact Diagonalization
-VALIDATE_TROTTER = True # Enable validation for small systems?
-VALIDATION_MAX_QUBITS = 4 # Only validate up to this many qubits (ED is expensive)
-VALIDATION_TOLERANCE = 0.005 # Tolerance for validation difference
-
-# Objective 7: Quantify Entanglement
-COMPUTE_ENTANGLEMENT = True # Compute bipartite entanglement entropy?
-ENTANGLEMENT_PARTITION = N_QUBITS // 2 # Partition size for entanglement (e.g., first half)
-
-
-# --- Simulation-Specific Parameters (Example: Ising) ---
-ISING_PARAMS = {
-    "n_qubits": N_QUBITS, # Use global N_QUBITS
-    "J_range": J_RANGE,   # Use global J_RANGE
-    "B_range": B_RANGE,   # Use global B_RANGE
-    "measurement_operator": "Z1Z2" # Measure correlation on qubits 0, 1
-    # Add other simulation types (Heisenberg, etc.) here if needed
+# --- Simulation-Specific Parameter Dictionaries ---
+# These define the *structure* and default ranges if not overridden
+# Measurement operator is key here
+SIMULATION_CONFIGS = {
+    "IsingModel": {
+        "class_path": "quantum_ml_simulation.simulations.ising_model.IsingModelSimulation",
+        "params": ["n_steps", "J", "B"], # Order matters for param tuples
+        "default_ranges": { # Used if not overridden by CLI args
+            "n_qubits": N_QUBITS,
+            "n_steps": N_STEPS_RANGE,
+            "J": J_RANGE,
+            "B": B_RANGE
+        },
+        "measurement_operator": "Z1Z2",
+        "extra_args": {} # Any other args needed by __init__ besides n_qubits, op
+    },
+    # Add entries for SpinChainPotential, DimerizedHeisenberg when implemented
+    # "SpinChainPotential": { ... },
+    # "DimerizedHeisenberg": { ... },
 }
 
-# --- ML Parameters (Keep defaults for now, adjust after data generation) ---
-ML_MODEL_PARAMS = {
-    "input_dim": None,
-    "output_dim": 1, # Still predicting one primary value (<Z1Z2>)
-    "hidden_layers": [128, 64, 32], # Slightly deeper for potentially more complex data
+# --- Default ML Parameters ---
+# Used by train_evaluate_ml.py in 'standard' mode
+DEFAULT_ML_PARAMS = {
+    "hidden_layers": [128, 64, 32],
     "activation": "relu",
     "optimizer": "adam",
     "learning_rate": 0.001,
     "loss": "mean_squared_error",
-    "epochs": 200,
-    "batch_size": 32,
+    "epochs": 100, # Reduced default epochs for faster runs
+    "batch_size": 64, # Slightly larger batch size
+    "early_stopping_patience": 15,
+    "reduce_lr_patience": 7,
+    # Data splitting ratios used in train_evaluate_ml.py
     "validation_split": 0.2,
     "test_split": 0.2
 }
 
-# --- Data Storage Paths ---
-BASE_SAVE_PATH = f"./project_results_nq{N_QUBITS}_t{DELTA_T:.2f}" # More descriptive path
-DATA_PATH = os.path.join(BASE_SAVE_PATH, "simulation_data")
-ML_RESULTS_PATH = os.path.join(BASE_SAVE_PATH, "ml_results")
+# --- ML Hyperparameter Search Space ---
+# Used by train_evaluate_ml.py in 'hp_search' mode
+HP_SEARCH_PARAMS = {
+    'learning_rate': [0.01, 0.001, 0.0005],
+    'batch_size': [32, 64, 128],
+    'hidden_layers': [
+        [64, 32],
+        [128, 64],
+        [128, 64, 32],
+        # [256, 128, 64] # Can add more complex structures
+    ],
+    'activation': ['relu', 'tanh']
+    # 'optimizer': ['adam', 'sgd'] # Can add optimizer search too
+}
 
-# Ensure base directories exist
-os.makedirs(DATA_PATH, exist_ok=True)
-os.makedirs(ML_RESULTS_PATH, exist_ok=True)
+# --- Data Storage Configuration ---
+# Base path for all project results
+BASE_PROJECT_PATH = "./project_runs"
+# Subdirectory for generated simulation data (will contain metadata)
+SIM_DATA_SUBDIR = "simulation_data"
+# Subdirectory for ML results (will contain run-specific folders)
+ML_RESULTS_SUBDIR = "ml_results"
 
-print(f"Configuration loaded:")
-print(f"  N_Qubits: {N_QUBITS}, Delta_T: {DELTA_T}, N_Steps: {N_STEPS_RANGE[0]}-{N_STEPS_RANGE[-1]}")
-print(f"  J Range: {J_RANGE[0]} to {J_RANGE[-1]} ({len(J_RANGE)} points)")
-print(f"  B Range: {B_RANGE[0]} to {B_RANGE[-1]} ({len(B_RANGE)} points)")
-print(f"  Initial State: {INITIAL_STATE_TYPE}")
-print(f"  Simulation Mode: {SIMULATION_MODE}" + (f", Shots: {N_SHOTS}" if SIMULATION_MODE == 'shots' else ""))
-print(f"  Validate Trotter (<= {VALIDATION_MAX_QUBITS} qubits): {VALIDATE_TROTTER}")
-print(f"  Compute Entanglement (Partition: {ENTANGLEMENT_PARTITION}): {COMPUTE_ENTANGLEMENT}")
-print(f"  Data will be saved in: {BASE_SAVE_PATH}")
+# --- Utility Function for Path Generation ---
+def get_dataset_path(simulation_name: str, n_qubits: int, dt: float, n_steps_max: int) -> str:
+    """Generates a unique directory path for a specific dataset configuration."""
+    dataset_id = f"{simulation_name}_N{n_qubits}_dt{dt:.3f}_nmax{n_steps_max}"
+    return os.path.join(BASE_PROJECT_PATH, dataset_id)
+
+print("Configuration loaded.")
+# Avoid printing all ranges here, becomes too verbose
+print(f"  Default N_Qubits: {N_QUBITS}, Default Delta_T: {DELTA_T}")
+print(f"  Base Project Path: {BASE_PROJECT_PATH}")
 print("-" * 30)
