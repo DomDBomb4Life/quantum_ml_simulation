@@ -1,4 +1,6 @@
 # quantum_ml_simulation/generate_data.py
+# Orchestrates step-by-step data generation
+
 import argparse
 import os
 import sys
@@ -13,92 +15,84 @@ from .config import simulation_params as cfg
 from .data_management.data_handler import DataHandler
 
 def analyze_data(dataset_path: str, data_handler: DataHandler):
-    """Loads data and performs basic analysis."""
+    """Loads data and performs basic analysis (Now uses analyze_dataset.py)."""
     print(f"\n--- Analyzing Dataset: {os.path.basename(dataset_path)} ---")
-    X_df, y_series, metadata = data_handler.load_simulation_data_and_metadata(dataset_path)
+    print("Please use the dedicated 'analyze_dataset.py' script for detailed analysis.")
+    # Minimal check here:
+    X_df, y_df, metadata = data_handler.load_simulation_data_and_metadata(
+        dataset_path,
+        # No single target column now, need to load all output columns
+        # load_simulation_data_and_metadata needs adjustment if we want y_df here
+        # For now, just load features and metadata
+        load_target_vector=False # Hypothetical flag to just get X and meta
+    )
 
     if metadata:
-        print("\n[Metadata]")
-        for key, value in metadata.items():
-            # Truncate long lists for display
-            display_value = value
-            if isinstance(value, list) and len(value) > 10:
-                 display_value = f"[{value[0]}, ..., {value[-1]}] (Length: {len(value)})"
-            print(f"  {key}: {display_value}")
+        print("\n[Metadata Snippet]")
+        print(f"  Simulation Name: {metadata.get('simulation_name', 'N/A')}")
+        print(f"  N Qubits: {metadata.get('n_qubits', 'N/A')}")
+        print(f"  Delta T: {metadata.get('delta_t', 'N/A')}")
+        print(f"  Recorded Steps Range: {metadata.get('n_steps_range', 'N/A')}")
+        print(f"  ML Input Features: {metadata.get('expected_ml_features', 'N/A')}")
+        print(f"  ML Output Observables: {metadata.get('output_observable_names', 'N/A')}")
     else:
         print("\nNo metadata found.")
-        # Attempt to infer parameters from path if possible
-        try:
-            parts = os.path.basename(dataset_path).split('_')
-            sim_name = parts[0]
-            n_q = int(parts[1][1:])
-            dt = float(parts[2][2:])
-            n_max = int(parts[3][4:])
-            print(f"Inferred from path: Sim={sim_name}, N={n_q}, dt={dt}, n_max={n_max}")
-        except Exception:
-             print("Could not infer parameters from path.")
 
-
-    if X_df is None or y_series is None:
-        print("\n[Data Analysis]")
-        print("Could not load data for analysis.")
-        return
-
-    print("\n[Data Summary]")
-    print(f"  Shape (Features X): {X_df.shape}")
-    print(f"  Target (y) Length: {len(y_series)}")
-    print(f"  Feature Columns: {X_df.columns.tolist()}")
-
-    print("\n[Target Variable Statistics (output)]")
-    print(y_series.describe().to_string())
-
-    print("\n[Feature Statistics]")
-    print(X_df.describe().to_string())
-
-    print("\n[Missing Values Check]")
-    print("Features (X):")
-    print(X_df.isnull().sum().to_string())
-    print("\nTarget (y):")
-    print(f"  NaN count: {y_series.isnull().sum()}") # Should be 0 after filtering in load
-
-    # --- Basic Plots (Optional) ---
-    # Example: Histogram of the target variable
-    plt.figure(figsize=(8, 5))
-    plt.hist(y_series, bins=30, edgecolor='k', alpha=0.7)
-    plt.title(f"Histogram of Target Variable ('{y_series.name}')")
-    plt.xlabel("Value")
-    plt.ylabel("Frequency")
-    plt.grid(True, linestyle='--', alpha=0.6)
-    analysis_plot_path = os.path.join(data_handler.get_sim_data_path(dataset_path), "target_histogram.png")
-    try:
-         plt.savefig(analysis_plot_path)
-         print(f"\nTarget histogram saved to: {os.path.relpath(analysis_plot_path)}")
-         plt.close()
-    except Exception as e:
-         print(f"Could not save histogram: {e}")
-         # plt.show() # Optionally show if saving fails
+    if X_df is None:
+        print("\nCould not load feature data for basic check.")
+    else:
+        print(f"\n[Data Summary]")
+        print(f"  Shape (Features X): {X_df.shape}")
+        print(f"  Feature Columns: {X_df.columns.tolist()}")
+        print(f"\nRun 'analyze_dataset.py --dataset_id {os.path.basename(dataset_path)}' for full analysis.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Quantum Simulation Data Generation and Analysis")
+    parser = argparse.ArgumentParser(description="Quantum Simulation Time-Series Data Generation")
     parser.add_argument("--simulation", required=True, choices=cfg.SIMULATION_CONFIGS.keys(),
                         help="Name of the simulation type to run (e.g., IsingModel).")
     parser.add_argument("--n_qubits", type=int, default=None, help="Override default N_QUBITS.")
     parser.add_argument("--delta_t", type=float, default=None, help="Override default DELTA_T.")
-    parser.add_argument("--max_n_steps", type=int, default=None, help="Override default max n_steps.")
-    # Add arguments for J_RANGE, B_RANGE if needed, but gets complex. Better to modify config.
+    parser.add_argument("--max_n_steps", type=int, default=None, help="Maximum number of steps (n) to simulate and record.")
+    parser.add_argument("--initial_state", choices=['zero', 'superposition'], default=None, help="Override default INITIAL_STATE_TYPE.")
+    # Add arguments for J_RANGE, B_RANGE etc. if needed
     parser.add_argument("--force", action="store_true", help="Force regeneration even if data exists.")
-    parser.add_argument("--analyze", action="store_true", help="Analyze existing data instead of generating.")
+    # Removed --analyze, use separate script
 
     args = parser.parse_args()
 
     # --- Determine Parameters ---
     sim_config = cfg.SIMULATION_CONFIGS[args.simulation]
-    n_qubits = args.n_qubits if args.n_qubits is not None else sim_config["default_ranges"]["n_qubits"]
-    delta_t = args.delta_t if args.delta_t is not None else cfg.DELTA_T # Use global default dt
-    n_steps_range = list(range(1, args.max_n_steps + 1)) if args.max_n_steps is not None \
-                     else sim_config["default_ranges"]["n_steps"]
-    n_steps_max = n_steps_range[-1]
+    # Use CLI args > sim_config defaults > global defaults
+    n_qubits = args.n_qubits if args.n_qubits is not None else sim_config["default_ranges"].get("n_qubits", cfg.N_QUBITS)
+    delta_t = args.delta_t if args.delta_t is not None else sim_config.get("delta_t", cfg.DELTA_T) # Allow dt per sim?
+    n_steps_record_points = list(range(1, args.max_n_steps + 1)) if args.max_n_steps is not None \
+                        else sim_config["default_ranges"].get("n_steps", cfg.N_STEPS_RANGE)
+    n_steps_max = n_steps_record_points[-1]
+    initial_state_type = args.initial_state if args.initial_state is not None else cfg.INITIAL_STATE_TYPE
+    simulation_mode = cfg.SIMULATION_MODE # Keep global for now
+
+    # Parameter ranges specific to the simulation (use defaults from sim_config)
+    # The `params` key in SIMULATION_CONFIGS lists *all* params (incl n_steps)
+    # We need the ranges for params *other than* n_steps
+    varying_param_names = [p for p in sim_config["params"] if p != 'n_steps']
+    current_param_ranges = {}
+    for p_name in varying_param_names:
+         if p_name in sim_config["default_ranges"]:
+              current_param_ranges[p_name] = sim_config["default_ranges"][p_name]
+         else:
+              # Try finding in global ranges (e.g., J_RANGE, B_RANGE) - less ideal
+              # Best practice is to define all needed ranges within sim_config["default_ranges"]
+              print(f"Warning: Range for parameter '{p_name}' not found in SIMULATION_CONFIGS[{args.simulation}]['default_ranges'].")
+              # Attempt to find a global range - THIS IS BRITTLE
+              global_range_name = f"{p_name.upper()}_RANGE"
+              if hasattr(cfg, global_range_name):
+                    current_param_ranges[p_name] = getattr(cfg, global_range_name)
+                    print(f"  -> Found global range '{global_range_name}'.")
+              else:
+                    print(f"  -> ERROR: Cannot find range for '{p_name}'. Exiting.")
+                    sys.exit(1)
+
 
     # Construct dataset path based on *actual* parameters being used
     dataset_path = cfg.get_dataset_path(args.simulation, n_qubits, delta_t, n_steps_max)
@@ -106,21 +100,19 @@ def main():
 
     data_handler = DataHandler()
 
-    # --- Mode Selection ---
-    if args.analyze:
-        if data_handler.check_data_exists(dataset_path):
-            analyze_data(dataset_path, data_handler)
-        else:
-            print(f"Error: Cannot analyze. Data not found at expected location: {data_handler.get_sim_data_path(dataset_path)}")
-        return # Exit after analysis
+    # --- Check if Data Exists ---
+    if not args.force and data_handler.check_data_exists(dataset_path):
+        print("Data already exists. Use --force to regenerate.")
+        # Optionally run analysis here or just exit
+        # analyze_data(dataset_path, data_handler) # Call basic check
+        return
 
     # --- Data Generation Mode ---
-    print(f"\n--- Generating Data for: {args.simulation} ---")
-    print(f"Parameters: N={n_qubits}, dt={delta_t}, n_steps={n_steps_range[0]}-{n_steps_max}")
+    print(f"\n--- Generating Time-Series Data for: {args.simulation} ---")
+    print(f"Parameters: N={n_qubits}, dt={delta_t}, Record Steps={n_steps_record_points[0]}-{n_steps_max}")
+    print(f"Initial State: {initial_state_type}, Sim Mode: {simulation_mode}")
+    print(f"Parameter Ranges: {current_param_ranges}")
 
-    if not args.force and data_handler.check_data_exists(dataset_path):
-        print("Data already exists. Use --force to regenerate or --analyze to analyze.")
-        return # Exit if data exists and not forcing
 
     # --- Dynamically Import and Instantiate Simulation Class ---
     try:
@@ -131,78 +123,72 @@ def main():
         print(f"Error importing simulation class {sim_config['class_path']}: {e}")
         sys.exit(1)
 
-    # Prepare metadata BEFORE instantiation (to pass correct params)
-    metadata = {
-        "simulation_name": args.simulation,
-        "n_qubits": n_qubits,
-        "delta_t": delta_t,
-        "n_steps_range": n_steps_range,
-        "measurement_operator": sim_config["measurement_operator"],
-        "initial_state_type": cfg.INITIAL_STATE_TYPE, # Add other relevant global params
-        "simulation_mode": cfg.SIMULATION_MODE,
-        # Add parameter ranges used (J, B, etc.)
-        **{k: v for k, v in sim_config["default_ranges"].items() if k not in ['n_qubits', 'n_steps']},
-        **sim_config["extra_args"],
-    }
-
-    current_param_ranges = {
-        key: sim_config["default_ranges"][key]
-        for key in sim_config["params"] if key not in ['n_qubits', 'n_steps'] and key in sim_config["default_ranges"]
-    }
-    # Update with J_RANGE and B_RANGE specifically if defined globally/overridden
-    if 'J' in sim_config["params"]:
-        current_param_ranges['J'] = sim_config["default_ranges"].get("J", []) # Or read override
-    if 'B' in sim_config["params"]:
-        current_param_ranges['B'] = sim_config["default_ranges"].get("B", []) # Or read override
-
-
-    # Instantiate the simulation, passing required parameters
+    # Instantiate the simulation, passing ALL required parameters
     try:
         simulation = SimClass(
             n_qubits=n_qubits,
-            measurement_operator=sim_config["measurement_operator"],
+            # measurement_operator=sim_config["measurement_operator"], # Removed
             delta_t=delta_t,
-            n_steps_range=n_steps_range,
-            initial_state_type=cfg.INITIAL_STATE_TYPE, # Read from global config
-            simulation_mode=cfg.SIMULATION_MODE,       # Read from global config
-            param_ranges=current_param_ranges       # Pass the dict of ranges
-            # Add **sim_config["extra_args"] if needed
+            n_steps_range=n_steps_record_points, # Pass the points to record
+            initial_state_type=initial_state_type,
+            simulation_mode=simulation_mode,
+            param_ranges=current_param_ranges, # Pass the ranges dict
+            **sim_config.get("extra_args", {}) # Pass extra args like fixed_J
         )
-
-        # Optional: Verify simulation object has the intended parameters
-        # (This check is less critical now as parameters are passed directly)
-        # if simulation.n_qubits != n_qubits or simulation.delta_t != delta_t or simulation.n_steps_range != n_steps_range:
-        #      print("Warning: Simulation object parameters mismatch after instantiation.")
-
     except Exception as e:
         print(f"Error instantiating simulation class {class_name}: {e}")
         import traceback
-        traceback.print_exc() # Print full traceback for debugging instantiation
+        traceback.print_exc()
         sys.exit(1)
 
-    print("Starting quantum simulation runs...")
+    print("\nStarting quantum simulation trajectories...")
     start_time = time.time()
-    dataset = simulation.generate_dataset() # Generate list of dicts
+    # generate_dataset now runs the step-by-step simulation internally
+    dataset = simulation.generate_dataset()
     end_time = time.time()
-    print(f"Simulation runs completed in {end_time - start_time:.2f} seconds.")
+    print(f"Simulation trajectories completed in {end_time - start_time:.2f} seconds.")
 
     if not dataset:
         print("Error: No data generated by the simulation.")
         return
 
-    # Get expected feature names from the instance
-    expected_feature_names = simulation.get_ml_input_feature_names()
+    # --- Prepare for Saving ---
+    # Get expected feature names and output observable names from the instance
+    expected_ml_features = simulation.get_ml_input_feature_names()
+    output_observable_names = simulation.get_output_observable_names()
+
+    # Construct metadata dictionary
+    metadata = {
+        "simulation_name": args.simulation,
+        "n_qubits": n_qubits,
+        "delta_t": delta_t,
+        "n_steps_range": n_steps_record_points, # Record the actual points used
+        # "measurement_operator": sim_config["measurement_operator"], # Maybe keep for context?
+        "initial_state_type": initial_state_type,
+        "simulation_mode": simulation_mode,
+        "param_ranges_used": current_param_ranges, # Record ranges used
+        "fixed_params": sim_config.get("extra_args", {}), # Record fixed params
+        "expected_ml_features": expected_ml_features,
+        "output_observable_names": output_observable_names, # CRUCIAL for loading later
+        "generation_script": os.path.basename(__file__),
+        # generation_timestamp added by data_handler
+    }
 
     # Save data and metadata
-    print("Saving data and metadata...")
+    print("\nSaving data and metadata...")
     data_handler.save_simulation_data_with_metadata(
-        dataset,
-        metadata,
-        dataset_path,
-        expected_feature_names
+        dataset=dataset, # The list of dicts from generate_dataset
+        metadata=metadata,
+        dataset_path=dataset_path,
+        # Feature names passed here are used to structure the CSV/DF correctly
+        feature_names=expected_ml_features,
+        # Output observable names are saved in metadata, used during loading
+        # Need to modify save_simulation_data... to use output_observable_names for cols
+        output_observable_names=output_observable_names
     )
 
-    print("Data generation complete.")
+    print("\nData generation complete.")
+    # print(f"\nRun analysis using: python -m quantum_ml_simulation.analyze_dataset --dataset_id {os.path.basename(dataset_path)}")
 
 if __name__ == "__main__":
     main()
