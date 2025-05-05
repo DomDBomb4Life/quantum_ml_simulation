@@ -9,6 +9,7 @@ from qiskit.result import Counts
 import numpy as np
 from collections import Counter, defaultdict
 from typing import Union, Optional, List, Dict, Tuple
+import re
 
 # Use relative import for config
 from ..config import simulation_params as cfg # Keep for backend settings like N_SHOTS
@@ -100,54 +101,65 @@ class QuantumSimulator:
                 results.append(np.nan)
         return results
 
+    # Inside class QuantumSimulator:
+
     def _get_qiskit_operator(self, observable_str: str, num_qubits: int) -> SparsePauliOp:
         """
-        Converts string identifier (e.g., "Z0", "X1", "Z0Z1") to SparsePauliOp.
-        Handles single-qubit and specified two-qubit operators.
+        Converts string identifier (e.g., "Z0", "X1", "ZZ01", "XYZ012") to SparsePauliOp.
+        Format: PauliLetters followed by qubit indices. 'I' is ignored in PauliLetters.
         """
-        # Cache check is done in the calling function now
+        op_key = (observable_str, num_qubits)
+        if op_key in self._operator_cache:
+            return self._operator_cache[op_key]
+
+        # Regex to capture Pauli letters (X, Y, Z) and indices (digits)
+        match = re.match(r"([XYZ]+)(\d+)$", observable_str)
+        if not match:
+             # Handle single qubit case like "Z0" separately if regex fails?
+             # Or handle Identity separately? Let's check for Identity first.
+             if observable_str == 'I': # Allow just "I" for identity
+                 return SparsePauliOp('I'*num_qubits)
+             # Check single Pauli + single digit, e.g., Z0, X1
+             match_single = re.match(r"([XYZ])(\d+)$", observable_str)
+             if match_single:
+                  pauli_char = match_single.group(1)
+                  indices_str = match_single.group(2)
+                  if len(indices_str) == 1: # Ensure only one index for single Pauli
+                       pauli_chars = pauli_char
+                  else: # Treat Z01 as Z on 0 and Z on 1
+                       pauli_chars = pauli_char * len(indices_str)
+             else:
+                  raise ValueError(f"Invalid observable string format: '{observable_str}'. Expected format like 'Z0', 'XX12', 'XYZ012'.")
+        else:
+             pauli_chars = match.group(1)
+             indices_str = match.group(2)
+
+        if len(pauli_chars) != len(indices_str):
+            raise ValueError(f"Mismatch between number of Paulis ({len(pauli_chars)}) and indices ({len(indices_str)}) in '{observable_str}'. Use format like ZZ01 or XYZ012.")
+
         pauli_list = ['I'] * num_qubits
-        op_char = observable_str[0] # e.g., 'Z', 'X', 'Y'
-        qubit_indices_str = observable_str[1:] # e.g., '0', '1', '2', '01', '12'
+        parsed_indices = set()
 
-        if not op_char in ('I', 'X', 'Y', 'Z'):
-            raise ValueError(f"Unsupported Pauli operator type '{op_char}' in '{observable_str}'")
+        for i in range(len(pauli_chars)):
+            pauli_char = pauli_chars[i]
+            try:
+                q_idx = int(indices_str[i])
+            except ValueError:
+                raise ValueError(f"Invalid index character in '{observable_str}'")
 
-        try:
-            # Handle single qubit ops like Z0, X1, Y2
-            if len(qubit_indices_str) == 1:
-                q_idx = int(qubit_indices_str)
-                if not (0 <= q_idx < num_qubits):
-                    raise ValueError(f"Qubit index {q_idx} out of bounds for {num_qubits} qubits in '{observable_str}'")
-                pauli_list[q_idx] = op_char
-            # Handle two qubit ops like Z0Z1, X1X2 (assuming same Pauli type for now)
-            elif len(qubit_indices_str) == 2:
-                q_idx1 = int(qubit_indices_str[0])
-                q_idx2 = int(qubit_indices_str[1])
-                if not (0 <= q_idx1 < num_qubits and 0 <= q_idx2 < num_qubits and q_idx1 != q_idx2):
-                     raise ValueError(f"Invalid qubit indices {q_idx1}, {q_idx2} for {num_qubits} qubits in '{observable_str}'")
-                # Assume ZZ, XX, YY structure for now
-                pauli_list[q_idx1] = op_char
-                pauli_list[q_idx2] = op_char
-                # Add more complex parsing here if needed (e.g., "X0Y1") later
-            elif len(qubit_indices_str) > 2:
-                 # Example: Z0Z1Z2 - Currently just takes the first char as Pauli type
-                 indices = [int(idx) for idx in qubit_indices_str]
-                 if any(not (0 <= i < num_qubits) for i in indices):
-                      raise ValueError(f"Invalid qubit indices in '{observable_str}'")
-                 if len(set(indices)) != len(indices):
-                      raise ValueError(f"Duplicate qubit indices in '{observable_str}'")
-                 for q_idx in indices:
-                     pauli_list[q_idx] = op_char
-            else: # Just "I", "X", "Y", "Z"? Apply to qubit 0 by convention? Or reject? Let's reject for now.
-                raise ValueError(f"Invalid observable string format: '{observable_str}'. Needs qubit index(es).")
+            if not (0 <= q_idx < num_qubits):
+                raise ValueError(f"Qubit index {q_idx} out of bounds for {num_qubits} qubits in '{observable_str}'")
+            if q_idx in parsed_indices:
+                raise ValueError(f"Duplicate qubit index {q_idx} specified in '{observable_str}'")
 
-        except ValueError as e:
-             raise ValueError(f"Cannot parse observable string '{observable_str}': {e}")
+            pauli_list[q_idx] = pauli_char
+            parsed_indices.add(q_idx)
 
         # Qiskit Pauli string format: 'qN-1 ... q1 q0'
         qiskit_pauli_str = "".join(pauli_list[::-1])
-        return SparsePauliOp(qiskit_pauli_str)
+        operator = SparsePauliOp(qiskit_pauli_str)
+        self._operator_cache[op_key] = operator # Cache the result
+        return operator
 
 
     def calculate_expectation_value_counts(self, counts: Counts, observable_str: str, num_qubits: int) -> float:

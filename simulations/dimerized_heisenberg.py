@@ -1,11 +1,11 @@
 # quantum_ml_simulation/simulations/dimerized_heisenberg.py
-# Dimerized Heisenberg Chain (Time-Series Mode)
+# Dimerized Heisenberg Chain (Hybrid Sampling & Initial State Variation)
 
 import qiskit
 import itertools
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
-from typing import List, Dict, Optional, Iterator, Tuple
+from typing import List, Dict, Optional, Iterator, Tuple, Union
 
 # Use relative imports
 from .base_simulation import BaseSimulation
@@ -13,99 +13,81 @@ from .base_simulation import BaseSimulation
 class DimerizedHeisenbergSimulation(BaseSimulation):
     """
     Implements the N-qubit Dimerized Heisenberg Chain (Time-Series Mode).
-    Hamiltonian: H = J1 Sum_even[Heis] + J2 Sum_odd[Heis]
-    Uses Second-Order Symmetric Trotterization.
+    Supports grid/random sampling for J1, J2 and varying initial states.
     """
     def __init__(self,
                  n_qubits: int,
-                 # measurement_operator: str, # Removed
                  delta_t: float,
                  n_steps_range: List[int],
-                 initial_state_type: str,
+                 initial_state_config: Dict,
                  simulation_mode: str,
-                 param_ranges: Dict[str, List]): # Expect 'J1' and 'J2'
+                 sampling_method: str,
+                 num_parameter_sets: Optional[int],
+                 parameter_config: Dict, # Expects 'J1', 'J2' sampling info
+                 **extra_args):
         """Initializes the Dimerized Heisenberg simulation."""
         super().__init__(
             simulation_name="DimerizedHeisenberg",
             n_qubits=n_qubits,
-            # measurement_operator="N/A",
             delta_t=delta_t,
             n_steps_range=n_steps_range,
-            initial_state_type=initial_state_type,
+            initial_state_config=initial_state_config,
             simulation_mode=simulation_mode,
-            param_ranges=param_ranges
+            sampling_method=sampling_method,
+            num_parameter_sets=num_parameter_sets,
+            parameter_config=parameter_config,
+            **extra_args
         )
-        if 'J1' not in self.param_ranges or 'J2' not in self.param_ranges:
-            raise ValueError("DimerizedHeisenbergSimulation requires 'J1' and 'J2' in param_ranges.")
+        if 'J1' not in self.parameter_config or 'J2' not in self.parameter_config:
+            raise ValueError("DimerizedHeisenbergSimulation requires 'J1' and 'J2' keys in parameter_config.")
 
+    # --- Implement Abstract/Overridden Methods ---
 
-    # --- Implement Abstract Methods ---
+    def get_system_parameter_names(self) -> List[str]:
+        """Returns the varying system parameter names: ['J1', 'J2']."""
+        return ["J1", "J2"]
 
-    def get_parameter_space_without_n(self) -> Iterator[tuple]:
-        """Generates unique combinations of (J1, J2)."""
-        j1_range = self.param_ranges.get('J1', [])
-        j2_range = self.param_ranges.get('J2', [])
-        if not j1_range or not j2_range:
-            print("Warning: J1 or J2 range is empty.")
-            return iter(())
-        # Order: J1, J2
-        yield from itertools.product(j1_range, j2_range)
+    def get_param_sampling_config(self) -> Dict[str, Union[Tuple[float, float], List]]:
+        """Returns the sampling config for J1 and J2."""
+        return {
+            "J1": self.parameter_config.get("J1"),
+            "J2": self.parameter_config.get("J2")
+        }
 
-    def _add_trotter_step(self, circuit: qiskit.QuantumCircuit, params_without_n: tuple):
+    def _add_trotter_step(self, circuit: qiskit.QuantumCircuit, system_params: tuple):
         """Appends one symmetric Trotter step."""
-        # params_without_n = (J1, J2)
-        J1, J2 = params_without_n
+        J1, J2 = system_params
         dt = self.delta_t
-
-        # Angles
         angle_j1_half = 2.0 * J1 * (dt / 2.0)
         angle_j2_full = 2.0 * J2 * dt
 
         # Symmetric Trotter: exp(-i H_J1 dt/2) exp(-i H_J2 dt) exp(-i H_J1 dt/2)
-        # Apply H_J1 terms (even pairs: 0, 2, ...)
         if not np.isclose(J1, 0.0):
             for i in range(0, self.n_qubits - 1, 2):
-                circuit.rxx(angle_j1_half, i, i + 1)
-                circuit.ryy(angle_j1_half, i, i + 1)
-                circuit.rzz(angle_j1_half, i, i + 1)
-        # Apply H_J2 terms (odd pairs: 1, 3, ...)
+                circuit.rxx(angle_j1_half, i, i + 1); circuit.ryy(angle_j1_half, i, i + 1); circuit.rzz(angle_j1_half, i, i + 1)
         if not np.isclose(J2, 0.0):
             for i in range(1, self.n_qubits - 1, 2):
-                circuit.rxx(angle_j2_full, i, i + 1)
-                circuit.ryy(angle_j2_full, i, i + 1)
-                circuit.rzz(angle_j2_full, i, i + 1)
-        # Apply H_J1 terms again
+                circuit.rxx(angle_j2_full, i, i + 1); circuit.ryy(angle_j2_full, i, i + 1); circuit.rzz(angle_j2_full, i, i + 1)
         if not np.isclose(J1, 0.0):
             for i in range(0, self.n_qubits - 1, 2):
-                circuit.rxx(angle_j1_half, i, i + 1)
-                circuit.ryy(angle_j1_half, i, i + 1)
-                circuit.rzz(angle_j1_half, i, i + 1)
+                circuit.rxx(angle_j1_half, i, i + 1); circuit.ryy(angle_j1_half, i, i + 1); circuit.rzz(angle_j1_half, i, i + 1)
 
-    def _format_params_for_ml_input(self, n_step: int, params_without_n: tuple) -> List[float]:
-        """Formats input as [n_step, J1, J2]."""
-        J1, J2 = params_without_n
-        return [float(n_step), float(J1), float(J2)]
-
-    def get_ml_input_feature_names(self) -> List[str]:
-        """Returns the input feature names: ['n_steps', 'J1', 'J2']."""
-        return ['n_steps', 'J1', 'J2']
+    # get_ml_input_feature_names is handled by BaseSimulation
+    # _format_params_for_ml_input is handled by BaseSimulation
 
     def get_observables_to_track(self) -> List[str]:
-        """Returns observables for the ML output vector."""
-        # Similar to potential: Single Z, nearest-neighbor ZZ, XX, YY
+        """Returns observables for the ML output vector. Corrected format."""
         observables = []
-        for i in range(self.n_qubits):
-            observables.append(f"Z{i}")
+        for i in range(self.n_qubits): observables.append(f"Z{i}")
         for i in range(self.n_qubits - 1):
-            observables.append(f"Z{i}Z{i+1}")
-            observables.append(f"X{i}X{i+1}")
-            observables.append(f"Y{i}Y{i+1}")
+            observables.append(f"ZZ{i}{i+1}")
+            observables.append(f"XX{i}{i+1}")
+            observables.append(f"YY{i}{i+1}")
         return observables
 
-    def get_hamiltonian_operator(self, params_without_n: tuple) -> SparsePauliOp:
-        """Constructs the Hamiltonian (n_steps is irrelevant here)."""
-        J1, J2 = params_without_n
-        # (Logic is identical to previous version)
+    def get_hamiltonian_operator(self, system_params: tuple) -> SparsePauliOp:
+        """Constructs the Hamiltonian using system parameters J1, J2."""
+        J1, J2 = system_params
         num_qubits = self.n_qubits
         ham_list = []
         for i in range(num_qubits - 1):
