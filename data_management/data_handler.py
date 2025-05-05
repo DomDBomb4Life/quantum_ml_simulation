@@ -280,53 +280,55 @@ class DataHandler:
     def save_ml_run_results(self, run_name: str, dataset_path: str, run_config: Dict,
                             eval_results: Dict, training_history, model_trainer):
          # ... (implementation remains the same as before) ...
-         ml_results_dir = self.get_ml_results_path(dataset_path)
-         run_dir = os.path.join(ml_results_dir, run_name)
-         os.makedirs(run_dir, exist_ok=True)
-         simulation_name = os.path.basename(dataset_path).split('_')[0] # Infer from path is safer here
+        ml_results_dir = self.get_ml_results_path(dataset_path)
+        run_dir = os.path.join(ml_results_dir, run_name)
+        os.makedirs(run_dir, exist_ok=True)
+        simulation_name = os.path.basename(dataset_path).split('_')[0] # Infer from path is safer here
 
-         print(f"Saving ML run '{run_name}' results to: {os.path.relpath(run_dir)}")
+        print(f"Saving ML run '{run_name}' results to: {os.path.relpath(run_dir)}")
 
          # 1. Save Run Config
-         run_config_filepath = os.path.join(run_dir, "run_config.json")
-         try:
-             run_config['run_timestamp'] = time.strftime("%Y-%m-%d %H:%M:%S")
-             with open(run_config_filepath, 'w') as f: json.dump(run_config, f, indent=4)
-             print(f"  - Run config saved.")
-         except Exception as e: print(f"Error saving run config: {e}")
+        run_config_filepath = os.path.join(run_dir, "run_config.json")
+        try:
+            run_config['run_timestamp'] = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(run_config_filepath, 'w') as f: json.dump(run_config, f, indent=4)
+            print(f"  - Run config saved.")
+        except Exception as e: print(f"Error saving run config: {e}")
 
          # 2. Save Model
-         model_path = os.path.join(run_dir, f"{simulation_name}_model.keras")
-         try: model_trainer.save_model(model_path)
-         except Exception as e: print(f"Error saving Keras model: {e}")
+        model_path = os.path.join(run_dir, f"{simulation_name}_model.keras")
+        try: model_trainer.save_model(model_path)
+        except Exception as e: print(f"Error saving Keras model: {e}")
 
-         # 3. Save Eval Metrics
-         metrics_filepath = os.path.join(run_dir, f"{simulation_name}_eval_metrics.json")
-         # Use .item() for numpy types if needed
-         serializable_metrics = {k: v.item() if isinstance(v, np.generic) else v
-                                 for k, v in eval_results.items()
-                                 if k not in ['y_pred', 'y_test', 'df_results']}
-         try:
-             with open(metrics_filepath, 'w') as f: json.dump(serializable_metrics, f, indent=4)
-             print(f"  - Evaluation metrics saved.")
-         except Exception as e: print(f"Error saving metrics: {e}")
 
-         # 4. Save Predictions DataFrame
-         if 'df_results' in eval_results and isinstance(eval_results['df_results'], pd.DataFrame):
-             predictions_filepath = os.path.join(run_dir, f"{simulation_name}_predictions.csv")
-             try:
-                 eval_results['df_results'].to_csv(predictions_filepath, index=False, float_format='%.8g')
-                 print(f"  - Predictions/Actuals DataFrame saved.")
-             except Exception as e: print(f"Error saving predictions CSV: {e}")
+        # 3. Save Evaluation Metrics
+        metrics_filepath = os.path.join(run_dir, f"{simulation_name}_eval_metrics.json")
+        # --- MODIFIED LINES ---
+        # Explicitly convert metrics to Python floats and exclude non-metric keys
+        serializable_metrics = {}
+        for k, v in eval_results.items():
+             # Only include known scalar metric keys
+             if k in ['mse', 'mae', 'rmse', 'r2_score']:
+                 # Ensure conversion from potential numpy float types
+                 serializable_metrics[k] = float(v)
+             # Add other scalar metrics here if needed
+        # --- END MODIFIED LINES ---
+        try:
+            with open(metrics_filepath, 'w') as f:
+                json.dump(serializable_metrics, f, indent=4)
+            print(f"  - Evaluation metrics saved.")
+        except Exception as e:
+            print(f"Error saving metrics JSON: {e}") # More specific error message
+        
 
          # 5. Save Training History
-         if training_history and hasattr(training_history, 'history'):
-             history_filepath = os.path.join(run_dir, f"{simulation_name}_train_history.pkl")
-             try:
-                 serializable_history = {k: [float(val) for val in v] for k, v in training_history.history.items()}
-                 with open(history_filepath, 'wb') as f: pickle.dump(serializable_history, f)
-                 print(f"  - Training history saved.")
-             except Exception as e: print(f"Error saving training history: {e}")
+        if training_history and hasattr(training_history, 'history'):
+            history_filepath = os.path.join(run_dir, f"{simulation_name}_train_history.pkl")
+            try:
+                serializable_history = {k: [float(val) for val in v] for k, v in training_history.history.items()}
+                with open(history_filepath, 'wb') as f: pickle.dump(serializable_history, f)
+                print(f"  - Training history saved.")
+            except Exception as e: print(f"Error saving training history: {e}")
 
     def load_ml_model_from_run(self, dataset_path: str, run_name: str):
          # ... (implementation remains the same as before) ...

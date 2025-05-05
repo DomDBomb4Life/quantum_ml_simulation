@@ -1,4 +1,6 @@
 # quantum_ml_simulation/train_evaluate_ml.py
+# Handles ML training/evaluation for time-series vector output
+
 import argparse
 import os
 import sys
@@ -7,119 +9,170 @@ import pandas as pd
 import numpy as np
 import itertools
 import json
-import matplotlib.pyplot as plt # Keep for potential HP search summary plots
+import matplotlib.pyplot as plt
 
 # Use relative imports
 from .config import simulation_params as cfg
 from .data_management.data_handler import DataHandler
 from .ml_model.trainer import ModelTrainer
-from .ml_model.evaluator import ModelEvaluator
+from .ml_model.evaluator import ModelEvaluator # Evaluator needs updates too
 from sklearn.model_selection import train_test_split
 
 def run_standard_training(dataset_path: str, data_handler: DataHandler, run_name_suffix: str = ""):
-    """Runs ML training with default hyperparameters."""
-    print("\n--- Running Standard ML Training ---")
+    """Runs ML training with default hyperparameters for vector output."""
+    print("\n--- Running Standard ML Training (Vector Output Mode) ---")
     run_name = f"standard_run_{time.strftime('%Y%m%d_%H%M%S')}{run_name_suffix}"
     print(f"ML Run Name: {run_name}")
 
     # 1. Load Data and Metadata
     print("Loading dataset...")
-    X_df, y_series, metadata = data_handler.load_simulation_data_and_metadata(dataset_path)
-    if X_df is None or y_series is None:
-        print(f"Error: Could not load data from {dataset_path}. Exiting.")
+    # --- MODIFIED: Expects y_df (DataFrame) ---
+    X_df, y_df, metadata = data_handler.load_simulation_data_and_metadata(
+        dataset_path, load_target_vector=True
+    )
+    if X_df is None or y_df is None:
+        print(f"Error: Could not load data (X or Y vector) from {dataset_path}. Exiting.")
         return None
     if metadata is None:
-        print("Warning: Metadata not found. Proceeding without it.")
-    simulation_name = metadata.get("simulation_name", "UnknownSim") if metadata else "UnknownSim"
-    feature_names = X_df.columns.tolist() # Features are already selected by load method
-    input_dim = len(feature_names)
+        print("Warning: Metadata not found. Critical info like output names might be missing.")
+        # Attempt to proceed, but it's risky
+        metadata = {} # Use empty dict
+
+    simulation_name = metadata.get("simulation_name", "UnknownSim")
+    feature_names = metadata.get("expected_ml_features")
+    output_observable_names = metadata.get("output_observable_names")
+
+    # --- Determine input/output dimensions ---
+    if feature_names is None: feature_names = X_df.columns.tolist(); print("Warning: Inferring feature names from loaded X_df.")
+    if output_observable_names is None: output_observable_names = y_df.columns.tolist(); print("Warning: Inferring output names from loaded y_df.")
+
+    input_dim = X_df.shape[1]
+    output_dim = y_df.shape[1]
+    print(f"Data Loaded: Input Dim={input_dim}, Output Dim={output_dim}")
+    if input_dim != len(feature_names): print(f"Warning: X_df columns ({X_df.shape[1]}) != feature_names ({len(feature_names)})")
+    if output_dim != len(output_observable_names): print(f"Warning: y_df columns ({y_df.shape[1]}) != output_names ({len(output_observable_names)})")
+
 
     # 2. Prepare Data (Split)
     print("Splitting data...")
     test_split = cfg.DEFAULT_ML_PARAMS['test_split']
     val_split = cfg.DEFAULT_ML_PARAMS['validation_split']
     if (test_split + val_split) >= 1.0:
-        print("Error: Invalid split ratios in config. Sum must be < 1.")
-        return None
+        print("Error: Invalid split ratios in config. Sum must be < 1."); return None
 
+    # Convert to NumPy arrays BEFORE splitting
     X_np = X_df.values
-    y_np = y_series.values
+    y_np = y_df.values # y_np is now 2D: (num_samples, output_dim)
 
+    # Split 1: Test set
     X_train_val, X_test, y_train_val, y_test = train_test_split(
         X_np, y_np, test_size=test_split, random_state=42, shuffle=True
     )
-    # Calculate relative validation split size needed for the second split
+    # Split 2: Validation set
     relative_val_split = val_split / (1.0 - test_split) if (1.0 - test_split) > 1e-9 else 0.5
-    if relative_val_split >= 1.0 : relative_val_split = 0.5 # Clamp
-
+    if relative_val_split >= 1.0 : relative_val_split = 0.5
     if len(X_train_val) > 1:
          X_train, X_val, y_train, y_val = train_test_split(
               X_train_val, y_train_val, test_size=relative_val_split, random_state=42, shuffle=True
          )
-    else: # Handle case with very few samples
-         print("Warning: Not enough samples to create validation set. Using training set for validation.")
+    else:
+         print("Warning: Not enough samples for validation set. Using training set for validation.")
          X_train, y_train = X_train_val, y_train_val
-         X_val, y_val = X_train, y_train # Use training set for validation
+         X_val, y_val = X_train, y_train
 
     print(f"Data Split: Train={len(y_train)}, Validation={len(y_val)}, Test={len(y_test)}")
+    print(f"  Shapes: X_train={X_train.shape}, y_train={y_train.shape}, "
+          f"X_val={X_val.shape}, y_val={y_val.shape}, "
+          f"X_test={X_test.shape}, y_test={y_test.shape}")
     if len(y_train) == 0: print("Error: No training data after split."); return None
 
 
-    # 3. Initialize and Train Model (Using DEFAULT_ML_PARAMS from config)
+    # 3. Initialize and Train Model
     print("Initializing and training model...")
-    run_config = cfg.DEFAULT_ML_PARAMS.copy() # Start with defaults
-    run_config['mode'] = 'standard'
-    # We can potentially pass run_config directly to trainer if it's adapted,
-    # but for now, ModelTrainer reads from cfg.DEFAULT_ML_PARAMS implicitly via cfg.ML_MODEL_PARAMS.
-    # Let's make ModelTrainer more explicit later if needed. For now it uses the global config structure.
-    # *** IMPORTANT: Ensure ModelTrainer uses DEFAULT_ML_PARAMS, not ML_MODEL_PARAMS if they differ ***
-    # --> Modifying ModelTrainer to accept config dict might be cleaner long-term
-    # --> For now, assume ModelTrainer reads relevant keys from the global cfg module
+    run_config = cfg.DEFAULT_ML_PARAMS.copy()
+    run_config['mode'] = 'standard_vector'
+    run_config['input_dim'] = input_dim # Add actual dims to config log
+    run_config['output_dim'] = output_dim
 
-    trainer = ModelTrainer(input_dim=input_dim)
+    # --- MODIFIED: Pass explicit input_dim and output_dim ---
+    try:
+        trainer = ModelTrainer(input_dim=input_dim, output_dim=output_dim)
+    except Exception as e:
+         print(f"Error initializing ModelTrainer: {e}"); return None
+
+    # Train using 2D y arrays
     training_history = trainer.train(X_train, y_train, X_val=X_val, y_val=y_val)
+
 
     # 4. Evaluate Model
     print("Evaluating model...")
-    evaluator = ModelEvaluator(trainer)
-    X_test_df = pd.DataFrame(X_test, columns=feature_names)
-    y_test_series = pd.Series(y_test, name='output')
-    eval_results = evaluator.evaluate(X_test_df, y_test_series)
+    eval_results = None
+    evaluator = None
+    if X_test is not None and y_test is not None and len(y_test) > 0:
+         try:
+             evaluator = ModelEvaluator(trainer) # Evaluator now needs updating too!
+             # Pass features as DataFrame, targets as DataFrame/Series or 2D numpy array
+             # Need to reconstruct X_test_df to include feature names for evaluator plots
+             X_test_df = pd.DataFrame(X_test, columns=feature_names)
+             # Pass y_test as 2D numpy array
+             eval_results = evaluator.evaluate(X_test_df, y_test) # Pass 2D y_test
+         except Exception as e:
+              print(f"Error during evaluation: {e}")
+              import traceback; traceback.print_exc()
+    else:
+         print("Skipping evaluation on test set (not available or empty).")
 
-    # 5. Generate Plots
+
+    # 5. Generate Plots (Requires Evaluator Update for Vector Output)
     print("Generating plots...")
     ml_results_path = data_handler.get_ml_results_path(dataset_path)
     run_dir = os.path.join(ml_results_path, run_name)
-    plot_save_path_pvsa = os.path.join(run_dir, f"{simulation_name}_pred_vs_actual.png")
-    plot_save_path_abs_evsn = os.path.join(run_dir, f"{simulation_name}_abs_error_vs_nsteps.png")
-    plot_save_path_rel_evsn = os.path.join(run_dir, f"{simulation_name}_rel_error_vs_nsteps.png")
+    # Define output observable names from metadata if available, otherwise create generic names
+    output_obs_names = metadata.get("output_observable_names", [f"Observable_{i}" for i in range(output_dim)])
+    obs0_name = output_obs_names[0] if output_observable_names else "Observable_0"
+
+    # Path for prediction vs actual plot (only for the first observable)
+    plot_save_path_pvsa = os.path.join(run_dir, f"{simulation_name}_pred_vs_actual_{obs0_name}.png")
+    # Path for L2 norm error plot
+    plot_save_path_l2_evsn = os.path.join(run_dir, f"{simulation_name}_l2_error_vs_nsteps.png")
+    # Path for training history plot
     plot_save_path_history = os.path.join(run_dir, f"{simulation_name}_training_history.png")
 
     if evaluator and eval_results and 'df_results' in eval_results:
+        print("Generating evaluation plots...") # More specific message
         try:
-            r2 = eval_results.get('r2_score', np.nan)
-            evaluator.plot_predictions_vs_actual(eval_results["df_results"],
-                    title=f"{simulation_name}: Predictions vs Actual (Test Set, R²={r2:.4f})",
+            # Plot Pred vs Actual for first observable
+            evaluator.plot_predictions_vs_actual(
+                    eval_results["y_test_np"], # Pass numpy arrays
+                    eval_results["y_pred_np"], # Pass numpy arrays
+                    observable_index=0,
+                    observable_name=obs0_name, # Use the actual name
+                    title=f"{simulation_name}: Pred vs Actual ({obs0_name}, Test Set)", # More specific title
                     save_path=plot_save_path_pvsa)
+
+            # Plot L2 Norm Error vs n_steps (most important plot)
+            # --- MODIFIED LINE ---
             evaluator.plot_error_vs_n_steps(eval_results["df_results"],
-                    error_type='absolute_error',
-                    title=f"{simulation_name}: Mean Absolute Error vs n_steps (Test Set)",
-                    save_path=plot_save_path_abs_evsn)
-            evaluator.plot_error_vs_n_steps(eval_results["df_results"],
-                    error_type='relative_error',
-                    title=f"{simulation_name}: Mean Relative Error vs n_steps (Test Set)",
-                    save_path=plot_save_path_rel_evsn)
+                    error_column='l2_norm_error', # Changed 'error_type' to 'error_column'
+                    title=f"{simulation_name}: Mean L2 Norm Error vs n_steps (Test Set)",
+                    save_path=plot_save_path_l2_evsn)
+            # --- END MODIFIED LINE ---
+
         except Exception as e: print(f"Error generating evaluation plots: {e}")
+
     if evaluator and training_history:
         try: evaluator.plot_training_history(training_history, save_path=plot_save_path_history)
         except Exception as e: print(f"Error generating training history plot: {e}")
 
+
     # 6. Save Results
     print("Saving ML run results...")
+    # Need to ensure eval_results format is handled correctly by save_ml_run_results
+    if eval_results is None: eval_results = {} # Ensure eval_results is a dict
     data_handler.save_ml_run_results(
         run_name=run_name,
         dataset_path=dataset_path,
-        run_config=run_config, # Save the config used
+        run_config=run_config,
         eval_results=eval_results,
         training_history=training_history,
         model_trainer=trainer
@@ -128,161 +181,41 @@ def run_standard_training(dataset_path: str, data_handler: DataHandler, run_name
     return run_dir
 
 
+# --- run_hp_search function needs similar adaptation ---
+# It should also determine output_dim, pass it to trainer,
+# handle 2D y_np, and potentially adapt its result summary/comparison logic.
+# Skipping full refactor of hp_search for brevity now, focus on standard run.
 def run_hp_search(dataset_path: str, data_handler: DataHandler):
-    """Runs ML training for various hyperparameter combinations."""
-    print("\n--- Running Hyperparameter Search ---")
-    base_run_name = f"hp_search_{time.strftime('%Y%m%d_%H%M%S')}"
-    print(f"Base ML Run Name: {base_run_name}")
-
-    # 1. Load Data and Metadata
-    print("Loading dataset...")
-    X_df, y_series, metadata = data_handler.load_simulation_data_and_metadata(dataset_path)
-    if X_df is None or y_series is None:
-        print(f"Error: Could not load data from {dataset_path}. Exiting.")
-        return
-    simulation_name = metadata.get("simulation_name", "UnknownSim") if metadata else "UnknownSim"
-    feature_names = X_df.columns.tolist()
-    input_dim = len(feature_names)
-
-    # 2. Prepare Data (Split - same as standard for consistency)
-    print("Splitting data...")
-    test_split = cfg.DEFAULT_ML_PARAMS['test_split']
-    val_split = cfg.DEFAULT_ML_PARAMS['validation_split']
-    if (test_split + val_split) >= 1.0: print("Error: Invalid splits."); return
-
-    X_np = X_df.values
-    y_np = y_series.values
-    X_train_val, X_test, y_train_val, y_test = train_test_split(X_np, y_np, test_size=test_split, random_state=42)
-    relative_val_split = val_split / (1.0 - test_split) if (1.0 - test_split) > 1e-9 else 0.5
-    if relative_val_split >= 1.0 : relative_val_split = 0.5
-    if len(X_train_val)>1: X_train, X_val, y_train, y_val = train_test_split(X_train_val, y_train_val, test_size=relative_val_split, random_state=42)
-    else: X_train, y_train = X_train_val, y_train_val; X_val, y_val = X_train, y_train # Fallback
-    print(f"Data Split: Train={len(y_train)}, Validation={len(y_val)}, Test={len(y_test)}")
-    if len(y_train) == 0: print("Error: No training data."); return
-
-    # 3. Define Hyperparameter Grid
-    hp_grid = cfg.HP_SEARCH_PARAMS
-    param_names = list(hp_grid.keys())
-    param_values = list(hp_grid.values())
-    search_combinations = list(itertools.product(*param_values))
-    print(f"Total hyperparameter combinations to test: {len(search_combinations)}")
-
-    results_summary = [] # To store key results from each trial
-
-    # 4. Iterate Through Combinations
-    for i, params in enumerate(search_combinations):
-        trial_config = dict(zip(param_names, params))
-        trial_name_parts = [f"{name[:2]}{val}" for name, val in trial_config.items()] # Short name for dir
-        # Handle list case for hidden_layers in name
-        for j, (name, val) in enumerate(trial_config.items()):
-             if isinstance(val, list):
-                 trial_name_parts[j] = f"{name[:2]}{'x'.join(map(str, val))}"
-
-        trial_run_name = f"trial_{i+1}_{'_'.join(trial_name_parts)}"
-        print(f"\n--- Starting HP Trial {i+1}/{len(search_combinations)} ({trial_run_name}) ---")
-        print(f"Parameters: {trial_config}")
-
-        # Create a temporary config for this trial based on defaults
-        current_run_config = cfg.DEFAULT_ML_PARAMS.copy()
-        current_run_config.update(trial_config) # Override defaults with trial HPs
-        current_run_config['mode'] = 'hp_search_trial'
-
-        # --- Train Model for this trial ---
-        # *** IMPORTANT: Need to adapt ModelTrainer/Evaluator to accept config dict ***
-        # --> Quick Hack: Temporarily modify global cfg (NOT recommended for parallel execution)
-        # --> Better: Pass config dict to Trainer/Evaluator __init__ or methods
-        # For now, let's assume ModelTrainer reads from global cfg and we modify it (needs caution)
-
-        # --- (Placeholder for passing config - requires changes in Trainer/Evaluator) ---
-        # trainer = ModelTrainer(input_dim=input_dim, config_override=current_run_config)
-        # Instead, we'll just print a warning that it uses global config for now.
-        print("Warning: ModelTrainer currently uses global config. Ensure config reflects trial params if needed.")
-        # Ideally, ModelTrainer would take these directly:
-        # trainer = ModelTrainer(input_dim=input_dim,
-        #                       hidden_layers=current_run_config['hidden_layers'],
-        #                       activation=current_run_config['activation'],
-        #                       optimizer=current_run_config['optimizer'], # Need to add optimizer to HP search
-        #                       learning_rate=current_run_config['learning_rate'])
-        # history = trainer.train(...) # Pass batch_size, epochs from current_run_config
-
-        # --- Simplified approach (uses global config, less flexible) ---
-        trainer = ModelTrainer(input_dim=input_dim) # Uses default params from cfg
-        # NOTE: This mock approach doesn't actually use the trial HPs yet! Needs refactor.
-        # To make it work *without* refactoring trainer, you'd have to modify cfg.DEFAULT_ML_PARAMS
-        # which is bad practice.
-        # Let's simulate as if it used the HPs and just save the config.
-        print("Simulating training with trial HPs (requires ModelTrainer refactor for actual use)...")
-        # Mock history and evaluation for demonstration
-        mock_history = {'history': {'loss': [0.1, 0.01], 'val_loss': [0.15, 0.015], 'mae': [0.2, 0.05], 'val_mae': [0.25, 0.06]}}
-        mock_history_obj = type('obj', (object,), mock_history)() # Mock Keras history object
-
-        mock_eval_results = {
-            "mse": 0.015 + np.random.rand()*0.01,
-            "mae": 0.06 + np.random.rand()*0.02,
-            "rmse": np.sqrt(0.015 + np.random.rand()*0.01),
-            "r2_score": 0.9 + np.random.rand()*0.05,
-            # No df_results in mock
-        }
-        # --- End Mock ---
-
-        # --- Save results for this trial ---
-        trial_summary = current_run_config.copy() # Start with HPs
-        trial_summary.update(mock_eval_results)   # Add performance metrics
-        trial_summary['trial_run_name'] = trial_run_name
-        results_summary.append(trial_summary)
-
-        # Save individual trial results (using the mock objects for now)
-        data_handler.save_ml_run_results(
-            run_name=trial_run_name,
-            dataset_path=dataset_path,
-            run_config=current_run_config, # Config used for this trial
-            eval_results=mock_eval_results, # Mock eval results
-            training_history=mock_history_obj, # Mock history
-            model_trainer=trainer # Mock trainer (model not actually trained with HPs)
-        )
-
-    # 5. Save Overall HP Search Summary
-    summary_df = pd.DataFrame(results_summary)
-    summary_df = summary_df.sort_values(by='mae') # Sort by best MAE (or val_loss if available)
-    summary_filepath = os.path.join(data_handler.get_ml_results_path(dataset_path), f"{base_run_name}_summary.csv")
-    try:
-        summary_df.to_csv(summary_filepath, index=False, float_format='%.6g')
-        print(f"\nHyperparameter search summary saved to: {os.path.relpath(summary_filepath)}")
-        print("\nTop 5 Trials (sorted by MAE):")
-        print(summary_df[['trial_run_name', 'learning_rate', 'batch_size', 'hidden_layers', 'activation', 'mae', 'r2_score']].head().to_string())
-    except Exception as e:
-        print(f"Error saving HP search summary: {e}")
-
-    print("Hyperparameter search complete.")
+     print("\n--- Hyperparameter Search (Vector Output Mode) ---")
+     print("WARNING: HP Search for vector output needs adaptation similar to standard run.")
+     print("         Skipping HP search for now.")
+     # TODO: Implement HP search for vector output if needed later.
+     # Key steps: Load X_df, y_df; get input/output dims; loop through HPs;
+     # instantiate trainer with trial HPs and correct output_dim; train;
+     # evaluate using vector metrics; save results.
+     pass
 
 
 def main():
     parser = argparse.ArgumentParser(description="Quantum ML Model Training and Evaluation")
     parser.add_argument("--dataset_id", required=True,
-                        help="Identifier of the dataset directory (e.g., IsingModel_N4_dt0.05_nmax20).")
+                        help="Identifier of the dataset directory (e.g., IsingModel_N3_dt0.100_nmax10).")
     parser.add_argument("--mode", choices=['standard', 'hp_search'], default='standard',
                         help="Operation mode: 'standard' training or 'hp_search'.")
     parser.add_argument("--run_suffix", default="", help="Optional suffix for standard run name.")
-    # Add specific HP overrides if needed, e.g., --epochs, --batch_size
 
     args = parser.parse_args()
 
-    # Construct the full dataset path
     dataset_path = os.path.join(cfg.BASE_PROJECT_PATH, args.dataset_id)
-
     if not os.path.exists(dataset_path):
-        print(f"Error: Dataset path does not exist: {dataset_path}")
-        print("Please generate the data first using generate_data.py")
-        sys.exit(1)
+        print(f"Error: Dataset path does not exist: {dataset_path}"); sys.exit(1)
 
     data_handler = DataHandler()
 
     if args.mode == 'standard':
         run_standard_training(dataset_path, data_handler, args.run_suffix)
     elif args.mode == 'hp_search':
-        print("NOTE: HP Search currently uses mock training due to ModelTrainer limitations.")
-        print("Refactor ModelTrainer to accept config dict for full functionality.")
-        run_hp_search(dataset_path, data_handler)
+        run_hp_search(dataset_path, data_handler) # Currently prints warning and exits
 
 if __name__ == "__main__":
     main()

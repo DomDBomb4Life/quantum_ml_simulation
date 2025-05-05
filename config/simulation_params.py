@@ -7,11 +7,11 @@ import os
 # --- Core Simulation Setup ---
 N_QUBITS = 3 # Default N
 DELTA_T = 0.1 # Default dt
-N_STEPS_RECORD_POINTS = list(range(1, 11)) # Default list of steps to record
+N_STEPS_RECORD_POINTS = list(range(1, 40)) # Default list of steps to record
 
 # --- Data Generation Strategy ---
 SAMPLING_METHOD = "random" # 'grid' or 'random'
-DEFAULT_NUM_RANDOM_PARAMETER_SETS = 1000 # Used if SAMPLING_METHOD is 'random'
+DEFAULT_NUM_RANDOM_PARAMETER_SETS = 500 # Used if SAMPLING_METHOD is 'random'
 # Note: If 'grid', number of sets is determined by product of range lengths below.
 
 # --- Initial State Configuration ---
@@ -78,12 +78,19 @@ SIMULATION_CONFIGS = {
 }
 
 # --- Default ML Parameters ---
-# (Unchanged - Keep as is)
 DEFAULT_ML_PARAMS = {
-    "hidden_layers": [128, 64, 32], "activation": "relu", "optimizer": "adam",
-    "learning_rate": 0.001, "loss": "mean_squared_error", "epochs": 100,
-    "batch_size": 64, "early_stopping_patience": 15, "reduce_lr_patience": 7,
-    "validation_split": 0.2, "test_split": 0.2
+    "output_dim": None, # Explicitly add None placeholder - will be determined from data
+    "hidden_layers": [128, 64, 32],
+    "activation": "leaky_relu",
+    "optimizer": "adam",
+    "learning_rate": 0.001,
+    "loss": "mean_squared_error", # Suitable for multi-output regression
+    "epochs": 100,
+    "batch_size": 64,
+    "early_stopping_patience": 15,
+    "reduce_lr_patience": 7,
+    "validation_split": 0.2,
+    "test_split": 0.2
 }
 
 # --- ML Hyperparameter Search Space ---
